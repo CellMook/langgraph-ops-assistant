@@ -3,16 +3,15 @@
 本仓库包含两部分内容：
 
 1. **`ops-assistant/`**：一个可运行的演示项目——用 **LangGraph 固定工作流**（不是让模型自由选工具）把「自然语言问题 → 规则解析 → 知识检索 → SQLite 取数 → 指标计算 → 模板报告 → 人工审批 → 落盘」串成一条可审计、可复现、可中断恢复的链路。
-2. **`教程/`**：从零讲解 LangChain / LangGraph 概念的 22 篇单元教程与课程总览，用来解释这个项目里每一处设计为什么这么写。
+2. **`教程/`**：从零讲解 LangChain / LangGraph 概念的 22 篇单元教程 + 1 篇流式输出附录与课程总览，用来解释这个项目里每一处设计为什么这么写。
 
 配套文档：`docs/`（架构、演示、限制、面试、验证）、`reference/`（两份离线速查表）、`交付清单.md`（全部文件与状态）。
 
 > **诚实声明（先读这一段）**
 > - 这是**教学与求职演示项目**，不是生产系统；演示数据由 `data/generate.py` 按固定随机种子（`SEED = 20260901`）生成，不包含任何真实业务数据。
 > - 本仓库**不做任何就业承诺**，也不声称"多少天精通"；它只展示我能讲清楚、能跑通、能解释取舍的东西。
-> - 编写这些文档与代码的环境**无法启动任何进程**（`pwsh` 返回 `0xC0000142`，连 `Write-Output` 都失败），所以不能 `uv sync`、不能跑 pytest。
->   文中所有"预期输出"都写成 **预期（未在本环境执行）**；仓库内**不提供**任何测试报告、通过率截图或性能数字。
-> - 唯一可靠的验收方式是：你在自己的机器上按 [ops-assistant/README.md](ops-assistant/README.md) 跑一遍，并对照 [docs/verification.md](docs/verification.md) 记录结果。
+> - **验证状态（2026-10-19 更新）**：初稿编写环境无法启动任何进程（`pwsh` 返回 `0xC0000142`），当时所有"预期输出"均为静态推演。2026-10-19 审查已在 Linux 沙箱完成**完整实测**：测试 176/176 通过、静态检查清零、确定性评估 14/14、教程全部实验脚本与 CLI/API/Streamlit 实际运行通过（初测发现的 12 类缺陷已修复）。真实模型调用（需 API Key）仍未验证。明细见 [docs/verification.md](docs/verification.md)。
+> - 最可靠的验收方式仍然是：你在自己的机器上按 [ops-assistant/README.md](ops-assistant/README.md) 跑一遍，并对照 [docs/verification.md](docs/verification.md) 记录结果。
 
 ---
 
@@ -27,14 +26,14 @@ uv run python scripts/bootstrap.py                   # 生成演示库 + 知识�
 uv run python scripts/run_cli.py -q "2026 年九月销售额比八月变化多少？按地区分解差额，并说明销售额是否扣除了退款。"
 ```
 
-**预期（未运行）**：终端打印 `状态：awaiting_approval`、一份 8 段 Markdown 报告、来源列表（SQL + 文档）与审批摘要；报告**尚未**落盘。
+**实测（2026-10-19，Linux 沙箱）**：终端打印 `状态：awaiting_approval`、一份 8 段 Markdown 报告、来源列表（SQL + 文档）与审批摘要；报告**尚未**落盘。
 
 ```bash
 uv run python scripts/run_cli.py --list-threads                 # 拿到 thread_id
 uv run python scripts/run_cli.py --thread-id <thread_id> --resume approve --comment "OK"
 ```
 
-**预期（未运行）**：`状态：approved`，`导出文件：data/exports/report-<thread_id>.md`。
+**实测（2026-10-19）**：`状态：approved`，`导出文件：data/exports/report-<thread_id>.md`；重复 `--resume approve` 返回同一路径（幂等）。
 
 > 为什么"没有模型也能跑"是重要卖点而不是缺陷：它说明**数字不依赖模型**——所有金额、差额、百分比都由 `data/queries.py` 和 `domain/metrics.py` 算出，模型最多改一句不含数字的措辞。详见 [docs/architecture.md](docs/architecture.md) 与 [教程/14-把检索与数据接进工作流.md](教程/14-把检索与数据接进工作流.md)。
 
@@ -85,7 +84,7 @@ uv run python scripts/check_model.py
 | [docs/limitations.md](docs/limitations.md) | 已知限制、未验证项、改进清单 | 本次新增 |
 | [docs/interview.md](docs/interview.md) | 30 道自测题 + 项目介绍模板 + 设计权衡 | 本次新增 |
 | [docs/verification.md](docs/verification.md) | 诚实验证记录：哪些没跑、学习者机器上的完整命令与排查顺序 | 已完成（**未执行**） |
-| [教程/](教程/) | 22 个单元 + 课程总览（每篇 10 节、含"改坏它"实验与验收清单） | 已完成 |
+| [教程/](教程/) | 22 个单元 + 1 个附录 + 课程总览（每篇 10 节、含"改坏它"实验与验收清单） | 已完成 |
 | [交付清单.md](交付清单.md) | 每个文件的用途与状态（含"未生成/未验证"项） | 已完成 |
 | [工程规格.md](工程规格.md) | 项目规格（数据口径、接口、验收标准）；开发时的单一事实源 | 已实现 |
 | [docs/publish-github.md](docs/publish-github.md) | 如何把这个仓库发布到 GitHub（含排除项与自检命令） | 已完成 |

@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 # 文件日志默认名称（相对 log_dir）。
 DEFAULT_LOG_FILENAME = "ops-assistant.log"

@@ -46,10 +46,14 @@ def effective_preferences(values: dict[str, Any] | None) -> dict[str, Any]:
     返回：
         dict：至少包含 ``amount_unit`` 与 ``default_dimension`` 两个键；
         非法取值会被回退成默认值（避免坏数据把报告渲染搞崩）。
+
+    说明：
+        取值不是字符串（例如历史脏数据写入了 dict）时同样回退默认值，
+        绝不让偏好层把整轮工作流带崩。
     """
     merged = dict(DEFAULT_PREFERENCES)
     for key, value in dict(values or {}).items():
-        if key in DEFAULT_PREFERENCES and value is not None:
+        if key in DEFAULT_PREFERENCES and isinstance(value, str) and value:
             merged[key] = value
     if merged.get("amount_unit") not in {"元", "万元"}:
         merged["amount_unit"] = DEFAULT_AMOUNT_UNIT
@@ -151,7 +155,7 @@ class AssistantContext(TypedDict):
     conn: Any
     kb: KnowledgeBase
     llm: LLMClient
-    prefs: "PreferenceStore"
+    prefs: PreferenceStore
     metrics: MetricsCollector
 
 

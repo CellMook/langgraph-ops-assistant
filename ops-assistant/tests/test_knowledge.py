@@ -19,13 +19,12 @@ from typing import Any
 
 import pytest
 
-from ops_assistant.knowledge.index import VectorIndex
 from ops_assistant.knowledge.embeddings import HashingEmbeddings, tokenize
+from ops_assistant.knowledge.index import VectorIndex
+from ops_assistant.knowledge.loaders import load_documents
 from ops_assistant.knowledge.qa import KnowledgeAnswer, answer_from_knowledge
 from ops_assistant.knowledge.retrieve import KnowledgeBase
 from ops_assistant.knowledge.splitter import split_documents
-from ops_assistant.knowledge.loaders import load_documents
-
 
 # ---------------------------------------------------------------------------
 # T17 加载、切分与索引持久化
@@ -99,7 +98,10 @@ def test_t17_index_roundtrip(tmp_path, settings) -> None:
 @pytest.mark.parametrize(
     ("question", "expected_doc"),
     [
-        ("退款是否计入当月销售额？", "01_指标口径"),
+        # "退款是否计入当月销售额"问的是退款归属规则，最相关文档是 02（实测核对）；
+        # 01 的对应问题用"净销售额的定义"这类指标口径问法覆盖。
+        ("退款是否计入当月销售额？", "02_退款与归属"),
+        ("净销售额的定义是什么？", "01_指标口径"),
         ("退款金额算在哪个月？", "02_退款与归属"),
         ("华东大区包含哪些省份？", "03_地区说明"),
         ("orders 表有哪些字段？", "04_数据字典"),

@@ -17,10 +17,11 @@
 """
 
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -61,7 +62,7 @@ DIMENSIONS = ("region", "product", "month")
 
 def _now_iso() -> str:
     """返回 UTC 的 ISO8601 时间字符串。"""
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _request_id(request: Request | None) -> str:

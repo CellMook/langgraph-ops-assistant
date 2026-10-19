@@ -5,17 +5,16 @@
 
 ## 1. 先说最关键的：哪些结论没有实测
 
-编写本仓库的环境**无法启动任何进程**：`pwsh` 的每次调用（包括 `Write-Output`）都返回
-`[exit code: 3221225794]`（`0xC0000142`，`STATUS_DLL_INIT_FAILED`）。因此：
+**2026-10-19 更新**：初稿编写环境无法启动任何进程（`pwsh` 返回 `0xC0000142`），当时下表全部未做。
+审查阶段已在 Linux 沙箱补齐大部分实测（`uv sync`/`uv.lock`、`compileall`、`pytest` 176/176、
+`bootstrap.py`、uvicorn/streamlit 均已实际运行，详见 `verification.md`）。**当前仍未验证的**：
 
-| 未做的事 | 后果 |
+| 仍未做的事 | 后果 |
 | --- | --- |
-| `uv sync` / `uv lock` | 仓库内**没有 `uv.lock`**；依赖解析未验证 |
-| `python -m compileall` | 语法错误未经过解释器确认 |
-| `pytest` | 测试未运行过；"通过"无从谈起 |
-| `bootstrap.py` | 未生成 `data/ops.db`、`data/knowledge_index.json`、`data/ground_truth.json` |
-| `check_model.py` | 未验证任何真实模型的工具调用/结构化输出能力 |
-| uvicorn / streamlit | 未验证接口与页面实际可访问 |
+| `check_model.py`（真实模型） | 未验证任何真实模型的工具调用/结构化输出能力（无 API Key） |
+| 有密钥时的模型润色分支 | `LLM_POLISH_*` 降级路径未在真实模型下观察过 |
+| 真实 embedding 召回质量 | 索引仍用确定性哈希向量，语义检索效果未评估 |
+| 多用户并发 / 部署 | 单 worker 进程内单例，未做压测 |
 
 **唯一做过的是**：读代码逐项核对接口与字段（见 `verification.md` 第 5 节）、以及所有文档里的"预期输出"都标注为未执行。
 

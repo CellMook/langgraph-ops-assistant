@@ -279,7 +279,10 @@ def parse_question(
 
             if first_year == 0 or second_year == 0:
                 needs_clarification = True
-                clarification = f"请补充年份：你说的是哪一年的 {first_month} 月和 {second_month} 月？当前数据范围：{data_range}。"
+                clarification = (
+                    f"请补充年份：你说的是哪一年的 {first_month} 月和 {second_month} 月？"
+                    f"当前数据范围：{data_range}。"
+                )
             else:
                 current_month = _format_month(first_year, first_month)
                 previous_month = _format_month(second_year, second_month)
@@ -299,7 +302,9 @@ def parse_question(
 
         else:
             # 没有期间，也没有地区追问：要求补充时间范围。
-            if not regions and not any(word in stripped for word in ("退款怎么算", "净销售额", "毛销售额", "口径", "退款归属")):
+            if not regions and not any(
+                word in stripped for word in ("退款怎么算", "净销售额", "毛销售额", "口径", "退款归属")
+            ):
                 needs_clarification = True
                 clarification = f"请提供要分析的时间范围，例如「2026 年 9 月」。当前数据范围：{data_range}。"
 

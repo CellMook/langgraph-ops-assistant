@@ -68,3 +68,6 @@ ops-assistant/eval/results/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 教程实验脚本的运行副产物（16_interrupt_resume.py 会写 教程/实验/_output/）
+教程/实验/_output/

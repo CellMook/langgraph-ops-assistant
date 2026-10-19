@@ -7,8 +7,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 # 指标与维度的中文标签（只做展示，不参与计算）
 METRIC_LABELS = {
@@ -250,7 +251,17 @@ def render_analysis_report(
         (current_month, "本期", current),
     ):
         if not sales:
-            rows.append([f"{month}（{label}）", MISSING_TEXT, MISSING_TEXT, MISSING_TEXT, MISSING_TEXT, MISSING_TEXT, MISSING_TEXT])
+            rows.append(
+                [
+                    f"{month}（{label}）",
+                    MISSING_TEXT,
+                    MISSING_TEXT,
+                    MISSING_TEXT,
+                    MISSING_TEXT,
+                    MISSING_TEXT,
+                    MISSING_TEXT,
+                ]
+            )
             continue
         rows.append(
             [
@@ -332,7 +343,9 @@ def render_analysis_report(
     lines.append("## 口径与依据")
     lines.append("")
     lines.append("- 净销售额 = 毛销售额 − 已批准退款额；金额在数据库内以“分”为整数存储，展示时换算。")
-    lines.append("- 退款按退款发生月归属（`refunds.refund_date`），不按原订单所在月；`pending` 与 `rejected` 不计入退款额。")
+    lines.append(
+        "- 退款按退款发生月归属（`refunds.refund_date`），不按原订单所在月；`pending` 与 `rejected` 不计入退款额。"
+    )
     lines.append("- 毛销售额 = Σ(quantity × orders.unit_price_cents)，使用订单成交单价，不使用商品目录价。")
     lines.append("- 变化率分母为前一期的同一指标；分母为 0 时无定义，不用 ∞ 或 100% 代替。")
     lines.append(f"- 当前分析维度：{dimension_label}；本项目只支持 region / product / month，`channel` 不参与分析。")
@@ -409,7 +422,9 @@ def render_analysis_report(
             f"（{_money(metric_current, unit)} − {_money(metric_previous, unit)}）。"
         )
     if region_sum is not None:
-        lines.append(f"- 维度分解校验：Σ 各地区差额 = {format_int(region_sum)} 分，总差额 = {format_int(net_delta)} 分。")
+        lines.append(
+            f"- 维度分解校验：Σ 各地区差额 = {format_int(region_sum)} 分，总差额 = {format_int(net_delta)} 分。"
+        )
     lines.append("- 上述数字全部来自 data 层查询与 metrics 层计算函数的返回值，模板不做任何算术。")
     lines.append("")
 

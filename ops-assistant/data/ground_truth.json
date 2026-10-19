@@ -1,0 +1,585 @@
+{
+  "meta": {
+    "seed": 20260901,
+    "months": [
+      "2025-01",
+      "2025-02",
+      "2025-03",
+      "2025-04",
+      "2025-05",
+      "2025-06",
+      "2025-07",
+      "2025-08",
+      "2025-09",
+      "2025-10",
+      "2025-11",
+      "2025-12",
+      "2026-01",
+      "2026-02",
+      "2026-03",
+      "2026-04",
+      "2026-05",
+      "2026-06",
+      "2026-07",
+      "2026-08",
+      "2026-09"
+    ],
+    "generated_by": "compute_ground_truth.py",
+    "generated_at_utc": "2026-10-19T15:40:28+00:00",
+    "python_version": "3.11.2",
+    "sqlite_version": "3.40.1",
+    "data_range": {
+      "first": "2025-01",
+      "last": "2026-09"
+    },
+    "observed_months": [
+      "2025-02",
+      "2025-03",
+      "2025-04",
+      "2025-05",
+      "2025-06",
+      "2025-07",
+      "2025-08",
+      "2025-09",
+      "2025-10",
+      "2025-11",
+      "2025-12",
+      "2026-01",
+      "2026-02",
+      "2026-03",
+      "2026-04",
+      "2026-05",
+      "2026-06",
+      "2026-07",
+      "2026-08",
+      "2026-09"
+    ],
+    "db_file": "ops.db",
+    "channel_values": [
+      "京东",
+      "天猫",
+      "抖音",
+      "线下"
+    ],
+    "comparison_pinned": {
+      "current_month": "2026-09",
+      "previous_month": "2026-08",
+      "pinned_refund_id": "RF_XM_PINNED",
+      "pinned_refund_amount_cents": 128000
+    },
+    "notes": [
+      "所有金额单位为分（int），展示时由 report/format.py 转为元或万元。",
+      "meta.months 是声明的数据范围（2025-01 至 2026-09）；meta.observed_months 是库中实际出现过的月份，2025-01 为空月所以不在其中。",
+      "months[*] 的字段与 queries.MonthSales 完全同名，便于逐项比对。",
+      "regions[month][region_id] 的字段与 queries.RegionSales 完全同名，便于逐项比对。",
+      "comparison 里的 pct_change / share_of_delta 是不取整的原始浮点，与 domain/metrics.py 的计算结果可直接相等比较；pct_change_display / share_of_delta_display 才是保留 4 / 6 位小数的展示值。",
+      "channel 字段在 orders 表里存在，但分析工具不支持渠道维度（规格第 4 节第 11 条）。",
+      "edge_cases 前 7 个键对应规格 3.2 的 7 类边界；另有 2 个布尔开关沿用规格 3.3 示例命名，便于直接断言。",
+      "本文件由独立实现计算：只使用 sqlite3 + 原生 SQL，不 import queries.py / metrics.py。",
+      "本环境无法启动 Python 进程，因此文件中的数值未经本次运行验证。"
+    ]
+  },
+  "months": {
+    "2025-01": {
+      "month": "2025-01",
+      "gross_cents": 0,
+      "refund_cents": 0,
+      "net_cents": 0,
+      "order_count": 0,
+      "approved_refund_count": 0,
+      "pending_refund_count": 0,
+      "has_orders": false,
+      "has_any_refund_records": false
+    },
+    "2025-02": {
+      "month": "2025-02",
+      "gross_cents": 2599279,
+      "refund_cents": 30360,
+      "net_cents": 2568919,
+      "order_count": 57,
+      "approved_refund_count": 2,
+      "pending_refund_count": 1,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2025-03": {
+      "month": "2025-03",
+      "gross_cents": 2006547,
+      "refund_cents": 181009,
+      "net_cents": 1825538,
+      "order_count": 54,
+      "approved_refund_count": 4,
+      "pending_refund_count": 1,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2025-04": {
+      "month": "2025-04",
+      "gross_cents": 1530545,
+      "refund_cents": 70305,
+      "net_cents": 1460240,
+      "order_count": 41,
+      "approved_refund_count": 3,
+      "pending_refund_count": 2,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2025-05": {
+      "month": "2025-05",
+      "gross_cents": 2576559,
+      "refund_cents": 232677,
+      "net_cents": 2343882,
+      "order_count": 58,
+      "approved_refund_count": 5,
+      "pending_refund_count": 1,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2025-06": {
+      "month": "2025-06",
+      "gross_cents": 1624901,
+      "refund_cents": 105312,
+      "net_cents": 1519589,
+      "order_count": 38,
+      "approved_refund_count": 1,
+      "pending_refund_count": 0,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2025-07": {
+      "month": "2025-07",
+      "gross_cents": 1170656,
+      "refund_cents": 134653,
+      "net_cents": 1036003,
+      "order_count": 46,
+      "approved_refund_count": 4,
+      "pending_refund_count": 0,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2025-08": {
+      "month": "2025-08",
+      "gross_cents": 1689045,
+      "refund_cents": 175538,
+      "net_cents": 1513507,
+      "order_count": 46,
+      "approved_refund_count": 5,
+      "pending_refund_count": 0,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2025-09": {
+      "month": "2025-09",
+      "gross_cents": 1758976,
+      "refund_cents": 57906,
+      "net_cents": 1701070,
+      "order_count": 39,
+      "approved_refund_count": 5,
+      "pending_refund_count": 0,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2025-10": {
+      "month": "2025-10",
+      "gross_cents": 1840543,
+      "refund_cents": 133150,
+      "net_cents": 1707393,
+      "order_count": 52,
+      "approved_refund_count": 2,
+      "pending_refund_count": 2,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2025-11": {
+      "month": "2025-11",
+      "gross_cents": 1488747,
+      "refund_cents": 110175,
+      "net_cents": 1378572,
+      "order_count": 39,
+      "approved_refund_count": 2,
+      "pending_refund_count": 1,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2025-12": {
+      "month": "2025-12",
+      "gross_cents": 1773931,
+      "refund_cents": 50009,
+      "net_cents": 1723922,
+      "order_count": 47,
+      "approved_refund_count": 1,
+      "pending_refund_count": 0,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2026-01": {
+      "month": "2026-01",
+      "gross_cents": 1961923,
+      "refund_cents": 12057,
+      "net_cents": 1949866,
+      "order_count": 50,
+      "approved_refund_count": 2,
+      "pending_refund_count": 2,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2026-02": {
+      "month": "2026-02",
+      "gross_cents": 1975532,
+      "refund_cents": 179770,
+      "net_cents": 1795762,
+      "order_count": 48,
+      "approved_refund_count": 5,
+      "pending_refund_count": 1,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2026-03": {
+      "month": "2026-03",
+      "gross_cents": 2176166,
+      "refund_cents": 429952,
+      "net_cents": 1746214,
+      "order_count": 59,
+      "approved_refund_count": 3,
+      "pending_refund_count": 1,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2026-04": {
+      "month": "2026-04",
+      "gross_cents": 1734059,
+      "refund_cents": 35252,
+      "net_cents": 1698807,
+      "order_count": 47,
+      "approved_refund_count": 1,
+      "pending_refund_count": 0,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2026-05": {
+      "month": "2026-05",
+      "gross_cents": 1731989,
+      "refund_cents": 127322,
+      "net_cents": 1604667,
+      "order_count": 45,
+      "approved_refund_count": 3,
+      "pending_refund_count": 0,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2026-06": {
+      "month": "2026-06",
+      "gross_cents": 2157454,
+      "refund_cents": 119020,
+      "net_cents": 2038434,
+      "order_count": 54,
+      "approved_refund_count": 4,
+      "pending_refund_count": 0,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2026-07": {
+      "month": "2026-07",
+      "gross_cents": 1671086,
+      "refund_cents": 13375,
+      "net_cents": 1657711,
+      "order_count": 47,
+      "approved_refund_count": 2,
+      "pending_refund_count": 3,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2026-08": {
+      "month": "2026-08",
+      "gross_cents": 1684683,
+      "refund_cents": 0,
+      "net_cents": 1684683,
+      "order_count": 39,
+      "approved_refund_count": 0,
+      "pending_refund_count": 3,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "2026-09": {
+      "month": "2026-09",
+      "gross_cents": 1618920,
+      "refund_cents": 508121,
+      "net_cents": 1110799,
+      "order_count": 50,
+      "approved_refund_count": 16,
+      "pending_refund_count": 0,
+      "has_orders": true,
+      "has_any_refund_records": true
+    }
+  },
+  "regions": {
+    "2026-09": {
+      "R_EAST": {
+        "region_id": "R_EAST",
+        "region_name": "华东",
+        "gross_cents": 441586,
+        "refund_cents": 237932,
+        "net_cents": 203654,
+        "order_count": 9
+      },
+      "R_NE": {
+        "region_id": "R_NE",
+        "region_name": "东北",
+        "gross_cents": 292598,
+        "refund_cents": 32542,
+        "net_cents": 260056,
+        "order_count": 11
+      },
+      "R_NORTH": {
+        "region_id": "R_NORTH",
+        "region_name": "华北",
+        "gross_cents": 405293,
+        "refund_cents": 0,
+        "net_cents": 405293,
+        "order_count": 12
+      },
+      "R_SOUTH": {
+        "region_id": "R_SOUTH",
+        "region_name": "华南",
+        "gross_cents": 241796,
+        "refund_cents": 0,
+        "net_cents": 241796,
+        "order_count": 8
+      },
+      "R_SW": {
+        "region_id": "R_SW",
+        "region_name": "西南",
+        "gross_cents": 237647,
+        "refund_cents": 237647,
+        "net_cents": 0,
+        "order_count": 10
+      }
+    }
+  },
+  "comparison_2026_09_vs_2026_08": {
+    "current_month": "2026-09",
+    "previous_month": "2026-08",
+    "current": {
+      "month": "2026-09",
+      "gross_cents": 1618920,
+      "refund_cents": 508121,
+      "net_cents": 1110799,
+      "order_count": 50,
+      "approved_refund_count": 16,
+      "pending_refund_count": 0,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "previous": {
+      "month": "2026-08",
+      "gross_cents": 1684683,
+      "refund_cents": 0,
+      "net_cents": 1684683,
+      "order_count": 39,
+      "approved_refund_count": 0,
+      "pending_refund_count": 3,
+      "has_orders": true,
+      "has_any_refund_records": true
+    },
+    "current_net_cents": 1110799,
+    "previous_net_cents": 1684683,
+    "delta_net_cents": -573884,
+    "pct_change": -0.34064806257319624,
+    "pct_change_display": -0.3406,
+    "base_zero": false,
+    "regions": [
+      {
+        "region_id": "R_EAST",
+        "region_name": "华东",
+        "current_net_cents": 203654,
+        "previous_net_cents": 613468,
+        "delta_cents": -409814,
+        "share_of_delta": 0.7141059865756842,
+        "share_of_delta_display": 0.714106
+      },
+      {
+        "region_id": "R_NE",
+        "region_name": "东北",
+        "current_net_cents": 260056,
+        "previous_net_cents": 0,
+        "delta_cents": 260056,
+        "share_of_delta": -0.4531508109652822,
+        "share_of_delta_display": -0.453151
+      },
+      {
+        "region_id": "R_NORTH",
+        "region_name": "华北",
+        "current_net_cents": 405293,
+        "previous_net_cents": 317778,
+        "delta_cents": 87515,
+        "share_of_delta": -0.1524959747963003,
+        "share_of_delta_display": -0.152496
+      },
+      {
+        "region_id": "R_SOUTH",
+        "region_name": "华南",
+        "current_net_cents": 241796,
+        "previous_net_cents": 275959,
+        "delta_cents": -34163,
+        "share_of_delta": 0.059529451944992366,
+        "share_of_delta_display": 0.059529
+      },
+      {
+        "region_id": "R_SW",
+        "region_name": "西南",
+        "current_net_cents": 0,
+        "previous_net_cents": 477478,
+        "delta_cents": -477478,
+        "share_of_delta": 0.8320113472409059,
+        "share_of_delta_display": 0.832011
+      }
+    ],
+    "region_delta_sum_cents": -573884,
+    "region_delta_sum_matches": true
+  },
+  "edge_cases": {
+    "empty_month_2025_01": {
+      "month": "2025-01",
+      "order_count": 0,
+      "has_orders": false,
+      "has_any_refund_records": false,
+      "is_empty": true
+    },
+    "region_months_without_orders": {
+      "pairs": [
+        {
+          "region_id": "R_NE",
+          "month": "2025-09",
+          "order_count": 0
+        },
+        {
+          "region_id": "R_NE",
+          "month": "2026-08",
+          "order_count": 0
+        }
+      ],
+      "all_empty": true
+    },
+    "southwest_2026_09_net_zero": {
+      "region_id": "R_SW",
+      "month": "2026-09",
+      "gross_cents": 237647,
+      "refund_cents": 237647,
+      "net_cents": 0,
+      "order_count": 10,
+      "is_true_zero": true
+    },
+    "north_2026_07_pending_only": {
+      "region_id": "R_NORTH",
+      "month": "2026-07",
+      "pending_refund_count": 2,
+      "approved_refund_count": 0,
+      "rejected_refund_count": 0,
+      "refund_record_count": 2,
+      "approved_refund_cents": 0,
+      "is_pending_only": true
+    },
+    "cross_month_refunds_2026_08_to_2026_09": {
+      "order_month": "2026-08",
+      "refund_month": "2026-09",
+      "count": 4,
+      "total_amount_cents": 224019,
+      "items": [
+        {
+          "refund_id": "RF_O_202608_EAST_00873",
+          "order_id": "O_202608_EAST_00873",
+          "region_id": "R_EAST",
+          "refund_date": "2026-09-06",
+          "amount_cents": 14472
+        },
+        {
+          "refund_id": "RF_XM_PINNED",
+          "order_id": "O_202608_EAST_00868",
+          "region_id": "R_EAST",
+          "refund_date": "2026-09-08",
+          "amount_cents": 128000
+        },
+        {
+          "refund_id": "RF_XM_02",
+          "order_id": "O_202608_EAST_00869",
+          "region_id": "R_EAST",
+          "refund_date": "2026-09-12",
+          "amount_cents": 45805
+        },
+        {
+          "refund_id": "RF_XM_03",
+          "order_id": "O_202608_EAST_00870",
+          "region_id": "R_EAST",
+          "refund_date": "2026-09-18",
+          "amount_cents": 35742
+        }
+      ],
+      "pinned": {
+        "refund_id": "RF_XM_PINNED",
+        "order_id": "O_202608_EAST_00868",
+        "region_id": "R_EAST",
+        "refund_date": "2026-09-08",
+        "amount_cents": 128000
+      },
+      "meets_requirement": true
+    },
+    "negative_net_2026_03": {
+      "month": "2026-03",
+      "regions": [
+        {
+          "region_id": "R_SOUTH",
+          "gross_cents": 352846,
+          "refund_cents": 402846,
+          "net_cents": -50000,
+          "order_count": 12
+        }
+      ],
+      "pinned_region_id": "R_SOUTH",
+      "pinned_region_is_negative": true,
+      "primary_region_id": "R_SOUTH",
+      "has_negative": true
+    },
+    "product_month_without_orders": {
+      "months_checked": 20,
+      "products_checked": 12,
+      "total_zero_pairs": 7,
+      "known_pair": {
+        "product_id": "P_012",
+        "month": "2026-05"
+      },
+      "sample_pairs": [
+        {
+          "product_id": "P_004",
+          "month": "2025-05"
+        },
+        {
+          "product_id": "P_009",
+          "month": "2025-06"
+        },
+        {
+          "product_id": "P_008",
+          "month": "2026-05"
+        },
+        {
+          "product_id": "P_012",
+          "month": "2026-05"
+        },
+        {
+          "product_id": "P_001",
+          "month": "2026-06"
+        },
+        {
+          "product_id": "P_010",
+          "month": "2026-06"
+        },
+        {
+          "product_id": "P_005",
+          "month": "2026-07"
+        }
+      ],
+      "has_zero_pair": true
+    },
+    "2025-01_is_empty": true,
+    "R_SW_2026_09_net_zero": true
+  }
+}

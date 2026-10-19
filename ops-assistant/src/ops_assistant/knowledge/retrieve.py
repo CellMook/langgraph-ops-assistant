@@ -74,7 +74,7 @@ class KnowledgeBase:
         ]
 
     @classmethod
-    def build(cls, settings: Settings) -> "KnowledgeBase":
+    def build(cls, settings: Settings) -> KnowledgeBase:
         """从知识目录重建索引并保存到 settings.index_path。
 
         流程：读取文档 -> 切分（400/60）-> 向量化 -> 构建索引 -> 原子写盘。
@@ -162,7 +162,7 @@ class KnowledgeBase:
         return cls(index, embeddings, index_path=index_path)
 
     @classmethod
-    def load_or_build(cls, settings: Settings) -> "KnowledgeBase":
+    def load_or_build(cls, settings: Settings) -> KnowledgeBase:
         """优先加载已有索引；文件缺失、损坏或与当前 embedding 配置不一致时重建。
 
         参数：

@@ -78,7 +78,9 @@ class ResumeRequest(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    decision: Literal["approve", "reject", "edit"] = Field(description="approve 导出 / reject 不导出 / edit 按修改稿导出")
+    decision: Literal["approve", "reject", "edit"] = Field(
+        description="approve 导出 / reject 不导出 / edit 按修改稿导出"
+    )
     comment: str = Field(default="", max_length=2000, description="审批备注（可选）")
     edited_report: str | None = Field(
         default=None,
@@ -107,13 +109,22 @@ class InterruptPayload(BaseModel):
 
 
 class TurnUsage(BaseModel):
-    """用量与耗时快照。"""
+    """用量与耗时快照。
+
+    ``steps`` / ``tool_calls`` 是**本轮**的图状态计数（来自 ``budget`` 通道，
+    规格第 5.10 节"usage 合并图状态计数与 MetricsCollector"）；
+    进程级累计值看 ``metrics``（跨请求累加）。
+    """
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
     model_calls: int = 0
     elapsed_ms: float = 0.0
+    steps: int = 0
+    max_steps: int = 0
+    tool_calls: int = 0
+    max_tool_calls: int = 0
 
 
 class TurnResponse(BaseModel):

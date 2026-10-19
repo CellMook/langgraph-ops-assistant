@@ -38,7 +38,7 @@
 
 > **官方事实**：`create_agent` 是 LangChain 1.x 的高层智能体构造函数（`from langchain.agents import create_agent`），接收模型与工具，返回一个可调用对象；官方把它定位为“用少量代码获得一个工具调用循环”。
 >
-> **未验证**：`create_agent` 的具体参数名（如 `system_prompt` 还是 `prompt`）、返回值类型名、是否默认带 checkpointer，随版本可能变化。本文按 1.4.6 的公共用法书写；若你的版本报 `TypeError: unexpected keyword argument`，请以官方 Agents 页当前示例为准，并把它记进你的学习笔记。
+> **已验证（2026-10-19，langchain 1.4.6 实测）**：`create_agent` 的签名是 `create_agent(model, tools=None, *, system_prompt=None, middleware=(), response_format=None, state_schema=None, context_schema=None, checkpointer=None, store=None, ...)`——参数名就是 `system_prompt`（传 `prompt` 会抛 `TypeError`）；返回编译好的图（`CompiledStateGraph`），**默认不带 checkpointer**，要持久化必须自己传 `checkpointer=`。
 
 ---
 
@@ -399,7 +399,7 @@ if result["used_fallback"]:
 
 ## 6. 预期输出与关键状态变化
 
-### 6.1 无密钥（预期，未在本环境执行）
+### 6.1 无密钥（2026-10-19 实测运行通过，退出码 0）
 
 ```text
 == 单元 05 实验：create_agent 第一版问答助手 ==
