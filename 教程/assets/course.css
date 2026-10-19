@@ -1,0 +1,486 @@
+/* ==========================================================================
+   课程样式表 · LangChain / LangGraph 学习路线
+   用途：Markdown 导出的 HTML、课程内嵌页面、打印讲义。
+   设计约束：不依赖任何外部字体/图片；代码块可横向滚动；表格有边框；
+            打印时隐藏导航、避免行内断页。
+   版本基线：langchain 1.4.6 / langgraph 1.2.16（核对日期 2026-10-19）
+   ========================================================================== */
+
+:root {
+  --ink: #1f2933;
+  --ink-soft: #52606d;
+  --line: #d9e2ec;
+  --line-strong: #bcccdc;
+  --bg: #ffffff;
+  --bg-soft: #f7f9fb;
+  --bg-code: #f4f6f8;
+  --accent: #0b6e4f;
+  --accent-soft: #e6f4ef;
+  --warn: #9a3412;
+  --warn-soft: #fdf1e7;
+  --info: #1e4e8c;
+  --info-soft: #eaf1fb;
+  --radius: 6px;
+  --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas,
+    "Liberation Mono", Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei",
+    "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 4rem;
+  max-width: 52rem;
+  color: var(--ink);
+  background: var(--bg);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.75;
+  text-rendering: optimizeLegibility;
+}
+
+/* ---------- 标题 ---------- */
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 2.2em 0 0.6em;
+  line-height: 1.3;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+h1 {
+  margin-top: 0;
+  padding-bottom: 0.4em;
+  font-size: 1.9rem;
+  border-bottom: 2px solid var(--line-strong);
+}
+
+h2 {
+  padding-bottom: 0.25em;
+  font-size: 1.4rem;
+  border-bottom: 1px solid var(--line);
+}
+
+h3 {
+  font-size: 1.15rem;
+}
+
+h4 {
+  font-size: 1rem;
+  color: var(--ink-soft);
+}
+
+h2 + p,
+h3 + p {
+  margin-top: 0.4em;
+}
+
+/* 锚点链接在悬停时才显眼 */
+h1 a,
+h2 a,
+h3 a,
+h4 a {
+  color: inherit;
+  text-decoration: none;
+}
+
+h1 a:hover,
+h2 a:hover,
+h3 a:hover,
+h4 a:hover {
+  text-decoration: underline;
+}
+
+/* ---------- 段落与列表 ---------- */
+
+p,
+ul,
+ol,
+dl,
+blockquote,
+table,
+pre {
+  margin: 0 0 1.1em;
+}
+
+ul,
+ol {
+  padding-left: 1.5em;
+}
+
+li + li {
+  margin-top: 0.25em;
+}
+
+li > ul,
+li > ol {
+  margin-top: 0.25em;
+  margin-bottom: 0.25em;
+}
+
+strong {
+  font-weight: 650;
+}
+
+a {
+  color: var(--info);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+a:hover {
+  color: var(--accent);
+}
+
+hr {
+  margin: 2.5em 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+/* ---------- 引用块：用于“预期输出说明 / 事实标注” ---------- */
+
+blockquote {
+  margin-left: 0;
+  padding: 0.7em 1em;
+  color: var(--ink-soft);
+  background: var(--bg-soft);
+  border-left: 4px solid var(--line-strong);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+/* 页面顶部版本/时效提示 */
+.doc-banner {
+  margin: 0 0 1.6em;
+  padding: 0.6em 0.9em;
+  font-size: 0.92rem;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border: 1px solid #f0c9ad;
+  border-radius: var(--radius);
+}
+
+/* 事实分级标注（官方事实 / 教学简化 / 项目设计选择 / 未验证） */
+.fact,
+.simplified,
+.design,
+.unverified {
+  display: inline-block;
+  padding: 0.05em 0.45em;
+  font-size: 0.85em;
+  font-weight: 600;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.fact {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.simplified {
+  color: var(--info);
+  background: var(--info-soft);
+}
+
+.design {
+  color: #6b21a8;
+  background: #f3e8ff;
+}
+
+.unverified {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+/* 提示卡片（可选使用） */
+.callout {
+  margin: 1.2em 0;
+  padding: 0.8em 1em;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.callout > :last-child {
+  margin-bottom: 0;
+}
+
+/* ---------- 代码 ---------- */
+
+code,
+kbd,
+samp {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+/* 行内代码 */
+:not(pre) > code {
+  padding: 0.12em 0.35em;
+  color: #7c2d12;
+  background: var(--bg-code);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+pre {
+  overflow-x: auto;
+  padding: 0.9em 1em;
+  background: var(--bg-code);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  line-height: 1.55;
+  tab-size: 4;
+  -webkit-overflow-scrolling: touch;
+}
+
+pre code {
+  display: block;
+  padding: 0;
+  font-size: 0.86rem;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  white-space: pre;
+}
+
+/* 预期输出块：稍作区分 */
+pre.output,
+pre[data-kind="output"] {
+  background: #fbfbf7;
+  border-style: dashed;
+}
+
+/* 代码块横向滚动条（WebKit） */
+pre::-webkit-scrollbar {
+  height: 8px;
+}
+
+pre::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 4px;
+}
+
+kbd {
+  padding: 0.1em 0.35em;
+  font-size: 0.82em;
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+}
+
+/* ---------- 表格 ---------- */
+
+table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  border-spacing: 0;
+  font-size: 0.94rem;
+}
+
+thead {
+  background: var(--bg-soft);
+}
+
+th,
+td {
+  padding: 0.45em 0.7em;
+  text-align: left;
+  vertical-align: top;
+  border: 1px solid var(--line-strong);
+}
+
+th {
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+tbody tr:nth-child(even) {
+  background: #fcfdfe;
+}
+
+/* 表格里的代码不要强制不换行，避免把表格撑爆 */
+td code,
+th code {
+  white-space: normal;
+  word-break: break-word;
+}
+
+/* ---------- 复选框清单（验收标准） ---------- */
+
+li > input[type="checkbox"] {
+  margin-right: 0.45em;
+  transform: translateY(1px);
+}
+
+/* ---------- 图片 ---------- */
+
+img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+/* ---------- 目录（若导出时生成） ---------- */
+
+nav.toc {
+  margin: 0 0 2em;
+  padding: 1em 1.2em;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 0.94rem;
+}
+
+nav.toc ol {
+  margin-bottom: 0;
+}
+
+/* ---------- 打印 ---------- */
+
+@media print {
+  @page {
+    margin: 16mm 14mm;
+  }
+
+  body {
+    max-width: none;
+    padding: 0;
+    font-size: 11pt;
+    line-height: 1.55;
+    color: #000;
+  }
+
+  nav.toc,
+  .no-print {
+    display: none !important;
+  }
+
+  a {
+    color: #000;
+    text-decoration: underline;
+  }
+
+  /* 打印时展示链接地址，便于纸质讲义溯源 */
+  a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 9pt;
+    word-break: break-all;
+  }
+
+  pre,
+  blockquote,
+  table,
+  figure,
+  .callout {
+    page-break-inside: avoid;
+  }
+
+  pre {
+    overflow-x: visible;
+    white-space: pre-wrap;
+    word-break: break-word;
+    border: 1px solid #999;
+    background: #fff;
+  }
+
+  pre code {
+    white-space: pre-wrap;
+  }
+
+  h1,
+  h2,
+  h3 {
+    page-break-after: avoid;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+}
+
+/* ---------- 窄屏 ---------- */
+
+@media (max-width: 600px) {
+  body {
+    padding: 1.5rem 1rem 3rem;
+    font-size: 15px;
+  }
+
+  h1 {
+    font-size: 1.55rem;
+  }
+
+  h2 {
+    font-size: 1.25rem;
+  }
+
+  pre code {
+    font-size: 0.8rem;
+  }
+}
+
+/* ---------- 深色模式（跟随系统） ---------- */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e4e7eb;
+    --ink-soft: #9aa5b1;
+    --line: #323f4b;
+    --line-strong: #3e4c59;
+    --bg: #1a2028;
+    --bg-soft: #222b34;
+    --bg-code: #232c36;
+    --accent: #6ee7b7;
+    --accent-soft: #14352b;
+    --warn: #fdba74;
+    --warn-soft: #3a2a1c;
+    --info: #93c5fd;
+    --info-soft: #1c2c40;
+  }
+
+  :not(pre) > code {
+    color: #fdba74;
+  }
+
+  blockquote {
+    background: var(--bg-soft);
+  }
+
+  tbody tr:nth-child(even) {
+    background: #1e262f;
+  }
+
+  thead {
+    background: #263039;
+  }
+
+  kbd {
+    background: #2a343e;
+  }
+}

@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LangChain / LangGraph 速查表（非官方）</title>
+<style>
+  :root {
+    --ink: #1f2933;
+    --ink-soft: #52606d;
+    --line: #d9e2ec;
+    --line-strong: #bcccdc;
+    --bg: #ffffff;
+    --bg-soft: #f7f9fb;
+    --bg-code: #f4f6f8;
+    --accent: #0b6e4f;
+    --accent-soft: #e6f4ef;
+    --warn: #9a3412;
+    --warn-soft: #fdf1e7;
+    --info: #1e4e8c;
+    --info-soft: #eaf1fb;
+    --radius: 6px;
+    --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto; padding: 0 1.25rem 4rem; max-width: 62rem;
+    color: var(--ink); background: var(--bg); font-family: var(--sans);
+    font-size: 15.5px; line-height: 1.7;
+  }
+  header.top {
+    margin: 0 -1.25rem 1.5rem; padding: 1rem 1.25rem 0.9rem;
+    color: #7c2d12; background: var(--warn-soft);
+    border-bottom: 2px solid #f0c9ad;
+  }
+  header.top h1 { margin: 0 0 0.35em; font-size: 1.5rem; }
+  header.top p { margin: 0.15em 0; font-size: 0.92rem; }
+  .tag {
+    display: inline-block; padding: 0.1em 0.5em; margin-right: 0.35em;
+    font-size: 0.8rem; font-weight: 700; border-radius: 3px;
+    color: #fff; background: var(--warn);
+  }
+  nav.toc {
+    margin: 0 0 2rem; padding: 0.8rem 1.1rem; font-size: 0.92rem;
+    background: var(--bg-soft); border: 1px solid var(--line); border-radius: var(--radius);
+  }
+  nav.toc strong { display: block; margin-bottom: 0.3em; }
+  nav.toc a { margin-right: 0.9em; white-space: nowrap; }
+  h2 {
+    margin: 2.2em 0 0.6em; padding-bottom: 0.25em; font-size: 1.3rem;
+    border-bottom: 1px solid var(--line);
+  }
+  h3 { margin: 1.6em 0 0.5em; font-size: 1.05rem; }
+  p, ul, ol, table, pre { margin: 0 0 1em; }
+  a { color: var(--info); text-underline-offset: 2px; }
+  a:hover { color: var(--accent); }
+  code, kbd { font-family: var(--mono); font-size: 0.88em; }
+  :not(pre) > code {
+    padding: 0.1em 0.35em; color: #7c2d12; background: var(--bg-code);
+    border: 1px solid var(--line); border-radius: 4px; white-space: nowrap;
+  }
+  pre {
+    overflow-x: auto; padding: 0.8em 1em; background: var(--bg-code);
+    border: 1px solid var(--line); border-radius: var(--radius);
+    line-height: 1.5; tab-size: 4;
+  }
+  pre code { display: block; white-space: pre; font-size: 0.84rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  th, td { padding: 0.4em 0.6em; text-align: left; vertical-align: top; border: 1px solid var(--line-strong); }
+  th { background: var(--bg-soft); font-weight: 650; }
+  tbody tr:nth-child(even) { background: #fcfdfe; }
+  td code { white-space: normal; word-break: break-word; }
+  .note {
+    padding: 0.7em 0.9em; background: var(--info-soft); color: #17324f;
+    border: 1px solid #c6d8f0; border-radius: var(--radius); font-size: 0.92rem;
+  }
+  .warn {
+    padding: 0.7em 0.9em; background: var(--warn-soft); color: #7c2d12;
+    border: 1px solid #f0c9ad; border-radius: var(--radius); font-size: 0.92rem;
+  }
+  .ok { color: var(--accent); font-weight: 700; }
+  .bad { color: var(--warn); font-weight: 700; }
+  footer {
+    margin-top: 2.5rem; padding-top: 1rem; font-size: 0.86rem;
+    color: var(--ink-soft); border-top: 1px solid var(--line);
+  }
+  @media print {
+    header.top { color: #000; background: #fff; border-bottom: 2px solid #000; }
+    nav.toc { display: none; }
+    pre { white-space: pre-wrap; word-break: break-word; }
+    pre code { white-space: pre-wrap; }
+    a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 8pt; word-break: break-all; }
+    h2, h3 { page-break-after: avoid; }
+    pre, table { page-break-inside: avoid; }
+  }
+  @media (max-width: 640px) {
+    body { font-size: 15px; }
+    header.top h1 { font-size: 1.25rem; }
+    pre code { font-size: 0.8rem; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <h1>LangChain / LangGraph 速查表 <span class="tag">非官方速查</span></h1>
+  <p><strong>基线版本：langchain 1.4.6 · langgraph 1.2.16 · langchain-core 1.6.10</strong>（以 <code>uv.lock</code> 为准）</p>
+  <p><strong>核对日期 2026-10-19</strong> · 单文件、离线可用、无外部依赖 · 覆盖 messages / tools / structured output / create_agent / 常见错误</p>
+  <p>本页是学习辅助，不是官方文档；API 以官方文档与你锁定的版本为准。事实标注：<span class="ok">官方事实</span> / 教学简化 / 项目设计选择 / <span class="bad">未验证</span>。</p>
+</header>
+
+<nav class="toc">
+  <strong>目录</strong>
+  <a href="#env">0 环境与导入</a>
+  <a href="#messages">1 消息</a>
+  <a href="#models">2 模型调用</a>
+  <a href="#tools">3 工具</a>
+  <a href="#structured">4 结构化输出</a>
+  <a href="#agent">5 create_agent</a>
+  <a href="#graph">6 StateGraph</a>
+  <a href="#persist">7 Checkpointer</a>
+  <a href="#errors">8 常见错误</a>
+  <a href="#links">9 官方链接</a>
+</nav>
+
+<!-- ============================================================ -->
+<h2 id="env">0 环境与导入</h2>
+
+<pre><code># 安装（Windows PowerShell / 也适用于 macOS、Linux）
+uv add langchain langgraph langchain-openai python-dotenv
+uv sync                      # 按 uv.lock 还原
+uv run python -c "import langchain, langgraph; print(langchain.__version__)"</code></pre>
+
+<table>
+  <thead><tr><th>用途</th><th>导入</th></tr></thead>
+  <tbody>
+    <tr><td>OpenAI 兼容模型</td><td><code>from langchain_openai import ChatOpenAI</code></td></tr>
+    <tr><td>消息</td><td><code>from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage</code></td></tr>
+    <tr><td>工具装饰器</td><td><code>from langchain_core.tools import tool</code></td></tr>
+    <tr><td>Agent 工厂</td><td><code>from langchain.agents import create_agent</code></td></tr>
+    <tr><td>图</td><td><code>from langgraph.graph import StateGraph, START, END</code></td></tr>
+    <tr><td>消息 reducer</td><td><code>from langgraph.graph.message import add_messages</code></td></tr>
+    <tr><td>内存 checkpointer</td><td><code>from langgraph.checkpoint.memory import InMemorySaver</code></td></tr>
+    <tr><td>SQLite checkpointer</td><td><code>from langgraph.checkpoint.sqlite import SqliteSaver</code>（需 <code>langgraph-checkpoint-sqlite</code>）</td></tr>
+    <tr><td>控制流</td><td><code>from langgraph.types import Command, interrupt</code></td></tr>
+  </tbody>
+</table>
+
+<p class="warn"><strong>注意</strong>：<code>langchain.messages</code> 与 <code>langchain_core.messages</code> 都能用（<span class="ok">官方事实</span>：官方 messages 页示例使用前者）；同一项目内保持一致即可。若导入报 <code>ModuleNotFoundError: langchain_openai</code>，说明只装了 <code>langchain</code>，需要 <code>uv add langchain-openai</code>。</p>
+
+<!-- ============================================================ -->
+<h2 id="messages">1 消息（Messages）</h2>
+
+<table>
+  <thead><tr><th>类</th><th>角色</th><th>常用字段</th><th>谁产生</th></tr></thead>
+  <tbody>
+    <tr><td><code>SystemMessage</code></td><td>system</td><td><code>content</code></td><td>你的代码（规则/人设）</td></tr>
+    <tr><td><code>HumanMessage</code></td><td>user</td><td><code>content</code>, <code>id</code></td><td>用户输入</td></tr>
+    <tr><td><code>AIMessage</code></td><td>assistant</td><td><code>content</code>, <code>tool_calls</code>, <code>usage_metadata</code></td><td>模型返回</td></tr>
+    <tr><td><code>ToolMessage</code></td><td>tool</td><td><code>content</code>, <code>tool_call_id</code>, <code>name</code></td><td>你的工具执行结果</td></tr>
+  </tbody>
+</table>
+
+<pre><code>from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+
+messages = [
+    SystemMessage(content="你是财务分析助手，金额一律用「分」的整数。"),
+    HumanMessage(content="2026 年九月销售额比八月变化多少？", id="q-1"),
+]
+
+# 模型返回带工具调用时，AIMessage.tool_calls 形如：
+# [{"name": "query_month_sales", "args": {"month": "2026-09"}, "id": "call_abc", "type": "tool_call"}]
+ai = AIMessage(
+    content="",
+    tool_calls=[{"name": "query_month_sales", "args": {"month": "2026-09"},
+                 "id": "call_abc", "type": "tool_call"}],
+)
+
+tool_msg = ToolMessage(content='{"ok": true, "data": {"net_cents": 1286500}}',
+                       tool_call_id="call_abc", name="query_month_sales")</code></pre>
+
+<ul>
+  <li><strong>内容可以是字符串或内容块列表</strong>（content blocks）：多模态/多段文本用它，纯文本用 <code>str</code> 最省事。</li>
+  <li><strong><code>id</code> 是消息身份</strong>：<code>add_messages</code> 遇到同 id 会“替换而不是追加”，可用于“编辑上一条”。</li>
+  <li><strong>一条 <code>AIMessage</code> 可带多个 <code>tool_calls</code></strong>：每个调用对应一条 <code>ToolMessage</code>，<code>tool_call_id</code> 必须一一对应。</li>
+  <li><strong>工具结果建议序列化成 JSON 字符串</strong>放进 <code>content</code>，并在 prompt 里说明字段含义。</li>
+  <li><strong>不要伪造 <code>ToolMessage</code></strong>：模型没请求过的工具结果会污染上下文。</li>
+</ul>
+
+<p class="note">多轮对话的“记忆”不在模型里：你把历史消息（或 checkpointer 恢复出来的历史）拼进 <code>messages</code> 一起发，模型才“看得到”。上下文裁剪/摘要属于你的工程策略。</p>
+
+<!-- ============================================================ -->
+<h2 id="models">2 模型调用（Chat Model）</h2>
+
+<pre><code>import os
+from langchain_openai import ChatOpenAI
+
+# 任何 OpenAI 兼容端点：改 base_url + model 即可
+model = ChatOpenAI(
+    model="deepseek-chat",                              # 例：deepseek-chat / gpt-4o-mini
+    api_key=os.environ["OPS_API_KEY"],                 # 不要写死在代码里
+    base_url="https://api.deepseek.com/v1",            # 官方 OpenAI 可省略
+    temperature=0,
+    timeout=60,
+)
+
+reply = model.invoke("用一句话解释什么是 reducer。")
+print(reply.content)
+print(reply.usage_metadata)  # 若端点返回用量则存在，否则可能为 None</code></pre>
+
+<table>
+  <thead><tr><th>方法</th><th>行为</th><th>何时用</th></tr></thead>
+  <tbody>
+    <tr><td><code>invoke(input)</code></td><td>同步返回一条 <code>AIMessage</code></td><td>脚本、单轮</td></tr>
+    <tr><td><code>stream(input)</code></td><td>逐块产出内容块</td><td>CLI/UI 打字机效果</td></tr>
+    <tr><td><code>batch([...])</code></td><td>批量并发</td><td>评测、离线跑批</td></tr>
+    <tr><td><code>ainvoke/astream/abatch</code></td><td>异步版本</td><td>FastAPI 等异步服务</td></tr>
+  </tbody>
+</table>
+
+<p class="warn"><strong>端点排查顺序</strong>：<code>401</code> → key 错/没加载 .env；<code>404</code> → <code>base_url</code> 少了或多了 <code>/v1</code>；<code>model not found</code> → 模型名不是该平台的名字；连接超时 → 代理/网络/服务地址。</p>
+
+<!-- ============================================================ -->
+<h2 id="tools">3 工具（Tools）</h2>
+
+<h3>3.1 定义</h3>
+<pre><code>from typing import Literal
+from pydantic import BaseModel, Field
+from langchain_core.tools import tool
+
+class MonthArgs(BaseModel):
+    month: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="月份，格式 YYYY-MM")
+
+@tool("query_month_sales", args_schema=MonthArgs)
+def query_month_sales(month: str) -> str:
+    """查询某个月的净销售额（单位：分）。返回 JSON 字符串。"""
+    return '{"ok": true, "data": {"net_cents": 1286500}, "unit": "cents"}'
+
+print(query_month_sales.name)        # query_month_sales
+print(query_month_sales.description) # 取 docstring
+print(query_month_sales.args)        # 参数 schema
+print(query_month_sales.invoke({"month": "2026-09"}))</code></pre>
+
+<ul>
+  <li><strong>docstring = 给模型看的使用说明</strong>，写清“做什么、参数含义、返回什么、失败返回什么”。</li>
+  <li><strong><code>args_schema</code></strong> 用 Pydantic 约束参数：<code>pattern</code>、<code>Literal</code>、<code>Field(description=...)</code> 都会进 schema，模型更容易填对。</li>
+  <li><strong>直接调用用 <code>.invoke(dict)</code></strong>；不要用 <code>fn(**kwargs)</code> 绕过校验。</li>
+  <li><strong>失败不要抛异常给模型</strong>：返回 <code>{"ok": false, "error": {"code": ..., "message": ...}, "hint": ...}</code>，模型才能自我修正。</li>
+  <li><strong>工具要幂等/只读优先</strong>：写操作必须显式确认，避免 Agent 循环里重复副作用。</li>
+</ul>
+
+<h3>3.2 绑定与执行循环</h3>
+<pre><code>model_with_tools = model.bind_tools([query_month_sales])
+ai = model_with_tools.invoke([HumanMessage(content="九月净销售额是多少？")])
+
+if ai.tool_calls:
+    results = []
+    for call in ai.tool_calls:                     # [{"name","args","id","type"}]
+        tool_fn = {"query_month_sales": query_month_sales}[call["name"]]
+        output = tool_fn.invoke(call["args"])      # 单点执行
+        results.append(ToolMessage(content=output, tool_call_id=call["id"], name=call["name"]))
+    next_ai = model_with_tools.invoke([...history..., ai, *results])</code></pre>
+
+<table>
+  <thead><tr><th>阶段</th><th>你负责</th><th>常见坑</th></tr></thead>
+  <tbody>
+    <tr><td>定义</td><td>schema + docstring + 返回值契约</td><td>只写 <code>def</code> 不写 docstring，模型不知道何时用</td></tr>
+    <tr><td>请求</td><td>把工具绑给模型</td><td>绑了工具但没把 <code>AIMessage</code> 放进历史</td></tr>
+    <tr><td>执行</td><td>按 <code>tool_calls</code> 逐个调、逐个回填 <code>ToolMessage</code></td><td>漏 <code>tool_call_id</code>；一个调用回两条结果</td></tr>
+    <tr><td>收敛</td><td>循环上限 + 失败出口</td><td>无上限导致死循环/烧 token</td></tr>
+  </tbody>
+</table>
+
+<p class="note">工具调用是“模型请求 + 你执行”的两段式：模型不会真的执行函数，它只输出 <code>tool_calls</code>；执行权和校验权始终在你手里（这条同时是安全边界）。</p>
+
+<!-- ============================================================ -->
+<h2 id="structured">4 结构化输出（Structured Output）</h2>
+
+<pre><code>from typing import Literal
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+class QuestionSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")     # 多余字段直接报错
+
+    current_month: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+    previous_month: str | None = None
+    metric: Literal["net_sales", "gross_sales", "order_count"] = "net_sales"
+    dimension: Literal["region", "product", "month"] = "region"
+
+    @field_validator("current_month", "previous_month")
+    @classmethod
+    def check_month(cls, value: str | None) -> str | None:
+        if value is not None and not ("2025-01" <= value <= "2026-09"):
+            raise ValueError(f"月份超出数据范围：{value}")
+        return value
+
+structured = model.with_structured_output(QuestionSpec, method="function_calling")
+spec = structured.invoke("2026 年九月和八月对比，按地区看净销售额")
+print(type(spec).__name__, spec.model_dump())</code></pre>
+
+<table>
+  <thead><tr><th>做法</th><th>优点</th><th>边界</th></tr></thead>
+  <tbody>
+    <tr><td><code>with_structured_output(Schema)</code></td><td>一次调用直接得到对象</td><td>小模型可能不守 schema；<code>method</code> 取值得看版本支持</td></tr>
+    <tr><td><code>with_structured_output(Schema, include_raw=True)</code></td><td>同时拿到原始消息与解析结果/错误</td><td>多一层处理</td></tr>
+    <tr><td>让模型输出 JSON 再自己 <code>json.loads</code> + Pydantic 校验</td><td>完全可控、可重试</td><td>需要自己处理解析失败与重试</td></tr>
+  </tbody>
+</table>
+
+<p class="warn"><strong>schema 只是第一道门，不是业务校验</strong>：<code>pattern</code> 能挡住“2026-13”，挡不住“2026-01 没有数据”“前月晚于本月”“地区名写错”。业务规则（范围、顺序、枚举、缺失数据 ≠ 0）必须在你自己的纯函数里再校验一遍，并把错误码交给路由决定“澄清 / 修复 / 失败”。<span class="bad">未验证</span>：不同 <code>method</code> 取值（function_calling / json_schema 等）在你的版本里支持情况。</p>
+
+<!-- ============================================================ -->
+<h2 id="agent">5 create_agent（模型 + 工具循环）</h2>
+
+<pre><code>from langchain.agents import create_agent
+
+agent = create_agent(
+    model=model,                          # ChatOpenAI 或 "provider:model" 字符串（未验证字符串形式）
+    tools=[query_month_sales],
+    system_prompt="你是财务分析助手。金额用整数分；没有数据就说没有，不要编造。",
+)
+
+result = agent.invoke({"messages": [HumanMessage(content="九月净销售额是多少？")]})
+for message in result["messages"]:
+    print(type(message).__name__, message.content)
+
+# 步数上限（防止工具循环失控）
+result = agent.invoke(
+    {"messages": [HumanMessage(content="九月净销售额是多少？")]},
+    config={"recursion_limit": 24},
+)</code></pre>
+
+<table>
+  <thead><tr><th>create_agent 帮你做</th><th>它不做/你仍要做</th></tr></thead>
+  <tbody>
+    <tr><td>维护消息历史与循环</td><td>业务口径与数值校验</td></tr>
+    <tr><td>把 <code>tool_calls</code> 执行并回填 <code>ToolMessage</code></td><td>工具的权限、幂等、超时、预算</td></tr>
+    <tr><td>把工具 schema 交给模型</td><td>报告结构、来源引用、审计留痕</td></tr>
+    <tr><td>无工具时直接回答</td><td>澄清、失败出口、人工审批</td></tr>
+    <tr><td>可接 checkpointer 做多轮</td><td>“记住用户偏好”等跨会话能力（需 Store）</td></tr>
+  </tbody>
+</table>
+
+<p class="note"><strong>何时该用固定步骤的 StateGraph 而不是 <code>create_agent</code></strong>：步骤确定、需要可审计的中间状态、需要确定性数值计算、需要人工审批或预算控制时。原因：Agent 的循环由模型决定，你无法保证“先取数再计算再校验”的顺序；财务报告这类“算错就是事故”的场景应把关键步骤写成节点。</p>
+
+<!-- ============================================================ -->
+<h2 id="graph">6 StateGraph 速记</h2>
+
+<pre><code>import operator
+from typing import Annotated, TypedDict
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
+
+class OpsState(TypedDict, total=False):
+    question: str
+    messages: Annotated[list, add_messages]       # 追加 + 按 id 替换
+    trace: Annotated[list[dict], operator.add]    # 追加
+    status: str                                   # 默认覆盖
+
+def node_understand(state: OpsState) -> dict:      # 只返回“补丁”
+    return {"status": "running", "trace": [{"node": "understand"}]}
+
+def route_after_understand(state: OpsState) -> str:  # 纯函数路由
+    return "data" if state.get("question") else "fail"
+
+builder = StateGraph(OpsState)
+builder.add_node("understand", node_understand)
+builder.add_node("data", lambda s: {"status": "answered"})
+builder.add_node("fail", lambda s: {"status": "failed"})
+builder.add_edge(START, "understand")
+builder.add_conditional_edges("understand", route_after_understand,
+                              {"data": "data", "fail": "fail"})
+builder.add_edge("data", END)
+builder.add_edge("fail", END)
+graph = builder.compile()
+
+print(graph.invoke({"question": "九月 vs 八月", "messages": [], "trace": []}))</code></pre>
+
+<table>
+  <thead><tr><th>概念</th><th>一句话</th></tr></thead>
+  <tbody>
+    <tr><td>State</td><td>共享状态的结构声明（<code>TypedDict</code> 常用），字段即通道</td></tr>
+    <tr><td>Node</td><td><code>state -&gt; dict</code>，只返回自己改的字段</td></tr>
+    <tr><td>Edge</td><td>固定边“总是去下一个”；条件边由函数决定</td></tr>
+    <tr><td>Reducer</td><td>同字段多次写入怎么合并；默认覆盖，<code>Annotated</code> 声明后按你的规则</td></tr>
+    <tr><td>compile()</td><td>校验入口/出口/边并生成可执行图，之后才能 invok</td></tr>
+    <tr><td>stream(updates)</td><td>每个节点跑完产出一条 <code>{节点名: 补丁}</code></td></tr>
+    <tr><td>Command</td><td>节点在同一次返回里更新状态并指定下一节点（<code>Command(update=..., goto=...)</code>）</td></tr>
+    <tr><td>recursion_limit</td><td>框架级循环保险，超出抛异常</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="persist">7 Checkpointer 与 thread</h2>
+
+<pre><code>from langgraph.checkpoint.memory import InMemorySaver
+
+graph = builder.compile(checkpointer=InMemorySaver())
+config = {"configurable": {"thread_id": "user-42-demo"}}
+
+graph.invoke({"question": "九月 vs 八月", "messages": [], "trace": []}, config)
+graph.invoke({"question": "那华东地区呢？", "messages": [], "trace": []}, config)   # 自动带上文
+
+print(graph.get_state(config).values["status"])          # 当前状态
+print(len(list(graph.get_state_history(config))))        # 历史快照数
+graph.update_state(config, {"status": "manually_fixed"}) # 人工修正（谨慎）</code></pre>
+
+<table>
+  <thead><tr><th>场景</th><th>选哪个</th><th>原因</th></tr></thead>
+  <tbody>
+    <tr><td>单元测试、演示</td><td><code>InMemorySaver</code></td><td>零依赖、进程内、跑完即丢</td></tr>
+    <tr><td>单机交付、重启继续</td><td><code>SqliteSaver</code></td><td>写文件、跨进程</td></tr>
+    <tr><td>多人服务</td><td>Postgres checkpointer</td><td>并发与集中管理（<span class="bad">未验证</span>：与你版本的兼容性）</td></tr>
+  </tbody>
+</table>
+
+<p class="warn"><strong>恢复语义</strong>：<code>interrupt()</code> 恢复时，被中断节点会从函数开头重跑，所以 <code>interrupt()</code> 之前的代码必须幂等；写文件/发请求等副作用放到恢复之后或下一个节点。</p>
+
+<!-- ============================================================ -->
+<h2 id="errors">8 常见错误对照表</h2>
+
+<table>
+  <thead><tr><th>现象</th><th>高概率原因</th><th>怎么修</th></tr></thead>
+  <tbody>
+    <tr><td><code>401 Unauthorized</code></td><td>key 未加载 / 用了别的平台的 key</td><td>检查 <code>.env</code> 与 <code>load_dotenv()</code>；打印 key 前 4 位确认来源（不要打印全量）</td></tr>
+    <tr><td><code>404 Not Found</code></td><td><code>base_url</code> 缺/多 <code>/v1</code></td><td>按服务商文档填写，如 DeepSeek 用 <code>https://api.deepseek.com/v1</code></td></tr>
+    <tr><td><code>model not found</code></td><td>模型名与平台不一致</td><td>用平台文档里的精确名字；大小写敏感</td></tr>
+    <tr><td><code>ModuleNotFoundError: langchain_openai</code></td><td>只装了 <code>langchain</code></td><td><code>uv add langchain-openai</code> 后 <code>uv sync</code></td></tr>
+    <tr><td>工具没被调用</td><td>没 <code>bind_tools</code>；docstring 太模糊；参数 schema 不可满足</td><td>先确认 <code>model.bind_tools([...])</code>，再把 docstring 写清“何时用”</td></tr>
+    <tr><td><code>tool_call_id</code> 相关报错</td><td><code>ToolMessage</code> 没带 <code>tool_call_id</code>，或与 <code>AIMessage.tool_calls[].id</code> 不匹配</td><td>逐条对照 id；一个调用只回一条结果</td></tr>
+    <tr><td>模型重复请求同一个工具</td><td>工具返回空/无关内容；结果没放回历史；预算太大</td><td>返回结构化 JSON；检查是否把 <code>AIMessage</code> 与 <code>ToolMessage</code> 都加进历史</td></tr>
+    <tr><td>结构化输出校验失败</td><td>模型不守 schema；字段太多太复杂</td><td>拆小 schema、减少必填、加 <code>Field(description=...)</code>；失败时重试或降级规则解析</td></tr>
+    <tr><td><code>GraphRecursionError</code></td><td>图有环且无终止条件；<code>recursion_limit</code> 偏低</td><td>加预算与终止条件；<code>recursion_limit</code> 设为业务步数的约 2 倍</td></tr>
+    <tr><td><code>InvalidUpdateError</code> / 节点返回值报错</td><td>节点返回 <code>None</code>、返回未声明字段、就地改 state 不返回</td><td>节点必须 <code>return dict</code>；键必须出现在 State 声明里</td></tr>
+    <tr><td>状态字段被覆盖/丢失</td><td>没声明 reducer（默认覆盖），或节点返回了整条列表</td><td>事件流字段用 <code>Annotated[list, operator.add]</code>；节点只返回增量</td></tr>
+    <tr><td>checkpoint 序列化失败</td><td>State 里有连接、文件句柄、模型客户端</td><td>把运行期依赖放 <code>Context</code>，State 只放可序列化数据</td></tr>
+    <tr><td>多轮对话“失忆”</td><td>没传 <code>thread_id</code>，或每次换 thread，或没接 checkpointer</td><td><code>config={"configurable": {"thread_id": ...}}</code> 固定不变</td></tr>
+    <tr><td>流式输出顺序错乱</td><td>混用 <code>stream_mode</code>；把 token 流当成状态流</td><td>明确你要 <code>messages</code>（token）还是 <code>updates</code>（节点补丁）</td></tr>
+    <tr><td>中文乱码 / 文件写入失败</td><td>Windows 默认编码不是 UTF-8</td><td>读写文件显式 <code>encoding="utf-8"</code></td></tr>
+  </tbody>
+</table>
+
+<h3>8.1 排查顺序（建议固定下来）</h3>
+<ol>
+  <li><strong>先证明网络与密钥</strong>：一行 <code>model.invoke("hi")</code> 能否成功。</li>
+  <li><strong>再证明工具本身</strong>：直接 <code>tool.invoke({...})</code> 看返回是否符合契约。</li>
+  <li><strong>再看模型是否请求工具</strong>：打印 <code>ai.tool_calls</code>。</li>
+  <li><strong>最后看循环与预算</strong>：<code>trace</code>、<code>budget</code>、<code>recursion_limit</code>。</li>
+</ol>
+
+<!-- ============================================================ -->
+<h2 id="links">9 官方链接（核对日期 2026-10-19）</h2>
+
+<table>
+  <thead><tr><th>主题</th><th>链接</th></tr></thead>
+  <tbody>
+    <tr><td>LangChain 文档首页</td><td><a href="https://docs.langchain.com/">https://docs.langchain.com/</a></td></tr>
+    <tr><td>Messages</td><td><a href="https://docs.langchain.com/oss/python/langchain/messages">https://docs.langchain.com/oss/python/langchain/messages</a></td></tr>
+    <tr><td>Tools</td><td><a href="https://docs.langchain.com/oss/python/langchain/tools">https://docs.langchain.com/oss/python/langchain/tools</a></td></tr>
+    <tr><td>Structured output</td><td><a href="https://docs.langchain.com/oss/python/langchain/structured-output">https://docs.langchain.com/oss/python/langchain/structured-output</a></td></tr>
+    <tr><td>Agents（create_agent）</td><td><a href="https://docs.langchain.com/oss/python/langchain/agents">https://docs.langchain.com/oss/python/langchain/agents</a></td></tr>
+    <tr><td>LangGraph Graph API</td><td><a href="https://docs.langchain.com/oss/python/langgraph/graph-api">https://docs.langchain.com/oss/python/langgraph/graph-api</a></td></tr>
+    <tr><td>Persistence / checkpointer</td><td><a href="https://docs.langchain.com/oss/python/langgraph/persistence">https://docs.langchain.com/oss/python/langgraph/persistence</a></td></tr>
+    <tr><td>Interrupts（HITL）</td><td><a href="https://docs.langchain.com/oss/python/langgraph/interrupts">https://docs.langchain.com/oss/python/langgraph/interrupts</a></td></tr>
+  </tbody>
+</table>
+
+<footer>
+  <p><strong>非官方速查</strong> · 基线 langchain 1.4.6 / langgraph 1.2.16 / langchain-core 1.6.10 · <strong>核对日期 2026-10-19</strong></p>
+  <p>本页内容为学习辅助与教学整理，不构成官方文档；示例中的“预期输出”未在本环境执行。API 细节以官方文档及项目 <code>uv.lock</code> 锁定版本为准。标注为“未验证”的行为请在你自己的环境实测后记录。</p>
+</footer>
+
+</body>
+</html>

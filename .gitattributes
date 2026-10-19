@@ -1,0 +1,24 @@
+# 统一行尾，避免 Windows 提交后整文件 diff 噪声
+* text=auto
+
+*.md text eol=lf
+*.py text eol=lf
+*.sql text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# PowerShell 脚本用 CRLF，避免某些 Windows 工具链读取异常
+*.ps1 text eol=crlf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.db binary
+*.zip binary

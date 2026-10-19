@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LangGraph 速查表（非官方）</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1b1f24; --muted: #5c6670; --line: #d8dee4;
+    --code-bg: #f6f8fa; --accent: #0b62c4; --warn-bg: #fff8e1; --warn-line: #e6c14b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14181d; --fg: #e6e9ee; --muted: #9aa4b0; --line: #2a3138;
+      --code-bg: #1b2127; --accent: #79b8ff; --warn-bg: #2a2413; --warn-line: #7a6420;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto; max-width: 980px; padding: 28px 20px 64px;
+    background: var(--bg); color: var(--fg);
+    font: 15px/1.65 -apple-system, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+  }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  h2 { font-size: 19px; margin: 34px 0 10px; padding-bottom: 6px; border-bottom: 2px solid var(--line); }
+  h3 { font-size: 16px; margin: 20px 0 8px; }
+  p, li { color: var(--fg); }
+  .sub { color: var(--muted); margin: 0 0 18px; }
+  .badge {
+    display: inline-block; margin-right: 8px; padding: 2px 9px; border-radius: 999px;
+    border: 1px solid var(--line); font-size: 12px; color: var(--muted);
+  }
+  .notice {
+    background: var(--warn-bg); border: 1px solid var(--warn-line);
+    border-radius: 8px; padding: 10px 14px; margin: 14px 0;
+  }
+  code, pre { font-family: "Cascadia Code", Consolas, "Courier New", monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px 14px; overflow-x: auto; font-size: 13px; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0 18px; font-size: 14px; }
+  th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--code-bg); }
+  a { color: var(--accent); }
+  ul { padding-left: 22px; }
+  .tag { font-size: 12px; color: var(--muted); }
+  hr { border: none; border-top: 1px solid var(--line); margin: 26px 0; }
+  @media print {
+    body { max-width: none; padding: 0; font-size: 11pt; }
+    pre { page-break-inside: avoid; }
+    h2 { page-break-after: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<h1>LangGraph 速查表</h1>
+<p class="sub">
+  <span class="badge">非官方速查</span>
+  <span class="badge">langgraph 1.2.16</span>
+  <span class="badge">langchain 1.4.6</span>
+  <span class="badge">langchain-core 1.6.10</span>
+  <span class="badge">核对日期 2026-10-19</span>
+</p>
+
+<div class="notice">
+  <strong>先读这段。</strong>这是学习用的速查表，不是官方文档：代码示例来自本项目
+  <code>ops-assistant/</code> 的写法与官方文档的常见形态，<strong>未经运行验证</strong>。
+  版本号是 2026-10-19 在 PyPI 上核对的元数据；API 细节以官方文档与你机器上安装的版本为准。
+  官方入口：<a href="https://docs.langchain.com/oss/python/langgraph/overview">LangGraph Overview</a>、
+  <a href="https://docs.langchain.com/oss/python/langgraph/persistence">Persistence</a>、
+  <a href="https://docs.langchain.com/oss/python/langgraph/workflows-agents">Workflows &amp; Agents</a>。
+</div>
+
+<h2>1. 最小图：State → 节点 → 边</h2>
+<pre><code>from typing import TypedDict
+from langgraph.graph import END, START, StateGraph
+
+class State(TypedDict, total=False):
+    question: str
+    answer: str
+
+def understand(state: State) -&gt; dict:
+    return {"answer": f"收到：{state['question']}"}
+
+builder = StateGraph(State)
+builder.add_node("understand", understand)
+builder.add_edge(START, "understand")
+builder.add_edge("understand", END)
+graph = builder.compile()
+
+result = graph.invoke({"question": "九月销售额是多少？"})
+print(result["answer"])</code></pre>
+<ul>
+  <li>节点返回 <strong>状态增量</strong>（dict），不是完整状态。</li>
+  <li><code>START</code>/<code>END</code> 是特殊节点；没有边指向 END 的图不会结束。</li>
+  <li><code>total=False</code> 表示字段可缺省，适合"逐步补齐"的状态。</li>
+</ul>
+
+<h2>2. reducer：多节点写同一字段</h2>
+<pre><code>import operator
+from typing import Annotated, TypedDict
+from langgraph.graph.message import add_messages
+
+class State(TypedDict, total=False):
+    messages: Annotated[list, add_messages]      # 追加消息
+    trace: Annotated[list[dict], operator.add]   # 追加轨迹
+    sources: list[dict]                          # 无 reducer：整体覆盖</code></pre>
+<ul>
+  <li><code>Annotated[..., reducer]</code> 决定"同一字段被多个节点写入时怎么合并"。</li>
+  <li>没有 reducer 的字段：后写的会覆盖先写的（并行时尤其危险）。</li>
+  <li>本项目 <code>sources</code> 没有 reducer，靠节点自读旧值，是已知权衡。</li>
+</ul>
+
+<h2>3. 条件边与 Command</h2>
+<pre><code>def route(state: State) -&gt; str:
+    return "clarify" if not state.get("month") else "data"
+
+builder.add_conditional_edges("understand", route, {"clarify": "clarify", "data": "data"})
+
+# 另一种写法：节点内直接返回 Command 指定去向
+from langgraph.types import Command
+
+def gate(state: State) -&gt; Command:
+    if state.get("ok"):
+        return Command(goto="compute", update={"status": "running"})
+    return Command(goto="fail", update={"status": "failed"})</code></pre>
+<ul>
+  <li>条件边适合"路由函数集中判断"；<code>Command</code> 适合"节点自己决定下一步 + 顺带更新状态"。</li>
+  <li>同一个图里两种都用会难以排查，建议二选一为主。</li>
+</ul>
+
+<h2>4. 检查点与 thread</h2>
+<pre><code>from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
+import sqlite3
+
+# 测试 / 实验：内存检查点，进程结束即丢
+graph_mem = builder.compile(checkpointer=InMemorySaver())
+
+# 演示 / 生产：SQLite 检查点，重启可恢复
+conn = sqlite3.connect("data/checkpoints.db", check_same_thread=False)
+saver = SqliteSaver(conn)
+saver.setup()
+graph = builder.compile(checkpointer=saver)
+
+config = {"configurable": {"thread_id": "demo-001"}}
+graph.invoke({"question": "..."}, config=config)
+snapshot = graph.get_state(config)
+print(snapshot.values, snapshot.next)</code></pre>
+<ul>
+  <li><strong>thread 隔离</strong>：不同 <code>thread_id</code> 互不可见；同 thread 才有历史。</li>
+  <li><code>get_state</code> 读当前状态，<code>get_state_history</code> 读历史快照（时间旅行）。</li>
+  <li>没有 checkpointer 就不能 <code>interrupt</code>、不能恢复。</li>
+</ul>
+
+<h2>5. 人工审批：interrupt 与恢复</h2>
+<pre><code>from langgraph.types import Command, interrupt
+
+def review(state: State) -&gt; dict:
+    payload = {"type": "approval", "report_markdown": state["draft"], "options": ["approve", "reject"]}
+    decision = interrupt(payload)          # 图在此暂停，返回给调用方
+    return {"status": "approved" if decision == "approve" else "rejected"}
+
+# 第一次调用：会停在 interrupt
+turn = graph.invoke({"question": "..."}, config=config)
+
+# 提交审批：用 Command(resume=...) 继续
+turn = graph.invoke(Command(resume="approve"), config=config)</code></pre>
+<ul>
+  <li><strong>恢复时节点从头重跑</strong>：<code>interrupt()</code> 之前的代码会再执行一次。</li>
+  <li>所以：副作用（写文件、发消息）必须放在 interrupt 之后，或放到独立节点，并做幂等。</li>
+  <li><code>interrupt</code> 的载荷必须可 JSON 序列化（会写入检查点）。</li>
+</ul>
+
+<h2>6. 运行时上下文与 Store</h2>
+<pre><code>from typing import TypedDict
+from langgraph.runtime import Runtime
+
+class Context(TypedDict):
+    conn: object
+    settings: object
+
+def node(state: State, runtime: Runtime[Context]) -&gt; dict:
+    conn = runtime.context["conn"]        # 注入的依赖，不写进检查点
+    return {"answer": "..."}
+
+graph.invoke({"question": "..."}, config=config, context={"conn": conn, "settings": settings})
+
+# Store：跨 thread 的长期记忆（命名空间 + 键）
+store.put(("users",), "u1", {"amount_unit": "万元"})
+item = store.get(("users",), "u1")
+</code></pre>
+<ul>
+  <li><strong>Runtime Context</strong>：本次调用的依赖（连接、配置、模型），生命周期=一次调用。</li>
+  <li><strong>Store</strong>：跨会话记忆（偏好、用户画像），和检查点是两套东西。</li>
+  <li>本项目 Store 用 SQLite 鸭子类型适配器，属教学简化。</li>
+</ul>
+
+<h2>7. 子图</h2>
+<pre><code>sub = sub_builder.compile()                  # 子图本身是编译后的图
+parent = StateGraph(ParentState)
+parent.add_node("calc", sub)                 # 直接当节点用
+parent.add_edge(START, "calc")
+parent.add_edge("calc", END)</code></pre>
+<ul>
+  <li>父子状态默认按同名键传递；不同名时在子图入口/出口显式转换。</li>
+  <li>子图适合"可复用的一段流程"，滥用会让调试链路变深。</li>
+</ul>
+
+<h2>8. 预算、循环与失败出口</h2>
+<pre><code>def guard(state: State) -&gt; dict:
+    budget = dict(state.get("budget") or {"steps": 0, "max_steps": 12})
+    budget["steps"] += 1
+    if budget["steps"] &gt; budget["max_steps"]:
+        return {"status": "budget_exceeded", "budget": budget,
+                "errors": ["BUDGET_EXCEEDED: 预算用尽"]}
+    return {"budget": budget}
+
+def route_after(state: State) -&gt; str:
+    return "fail" if state.get("status") == "budget_exceeded" else "next"</code></pre>
+<ul>
+  <li>自己数步数并在业务层停下，比等 <code>recursion_limit</code> 抛异常更可控。</li>
+  <li>统一 <code>fail</code> 出口：所有失败分支收敛到一个节点，便于日志与 UI 处理。</li>
+</ul>
+
+<h2>9. 常见坑（按出现频率排序）</h2>
+<table>
+  <tr><th>现象</th><th>原因</th><th>修法</th></tr>
+  <tr><td>消息被覆盖，只剩最后一条</td><td>字段没加 <code>add_messages</code> reducer</td><td>用 <code>Annotated[list, add_messages]</code></td></tr>
+  <tr><td>并行分支丢数据</td><td>字段无 reducer，后写覆盖先写</td><td>加 reducer 或只让一个分支写</td></tr>
+  <tr><td>重启后读不到会话</td><td>用了 <code>InMemorySaver</code></td><td>换 <code>SqliteSaver</code> 并 <code>setup()</code></td></tr>
+  <tr><td>interrupt 报错"没有 checkpointer"</td><td>编译时未传 checkpointer 或缺少 <code>thread_id</code></td><td>补 checkpointer 与 config</td></tr>
+  <tr><td>恢复后文件写了两次</td><td>副作用在 <code>interrupt()</code> 之前</td><td>移到 interrupt 之后/独立节点 + 幂等</td></tr>
+  <tr><td>图跑成 <code>GraphRecursionError</code></td><td>循环没有终止条件</td><td>加预算与失败出口</td></tr>
+  <tr><td>节点返回值把状态清空</td><td>返回了完整状态而非增量</td><td>只返回要更新的键</td></tr>
+  <tr><td>中断载荷序列化失败</td><td>载荷里有 Path/dataclass/NaN</td><td>先转成 JSON 友好结构</td></tr>
+</table>
+
+<h2>10. 排查顺序（遇到问题照这个顺序）</h2>
+<ol>
+  <li><code>graph.get_state(config)</code>：状态停在哪？<code>next</code> 是什么？</li>
+  <li><code>stream(..., "updates")</code>：每个节点实际返回了什么增量？</li>
+  <li>看 <code>trace</code>/日志：哪个节点 <code>ok=False</code>，错误码是什么？</li>
+  <li>单独测节点函数（纯函数直接调用），排除图的问题。</li>
+  <li>最后才怀疑框架版本；先把 <code>pip show langgraph</code> 的版本记下来。</li>
+</ol>
+
+<hr />
+<p class="tag">
+  本速查表由学习项目维护，非官方材料。版本与链接核对日期：2026-10-19。
+  官方文档更新后请以官方为准；本项目对 API 的"未验证"标注见
+  <code>docs/verification.md</code>。
+</p>
+
+</body>
+</html>

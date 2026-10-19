@@ -1,0 +1,49 @@
+# Python 编译缓存与虚拟环境
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# 静态检查与测试缓存
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# 本机配置与密钥：绝不入库（.env.example 是唯一允许提交的示例文件）
+.env
+.env.*
+!.env.example
+
+# 运行生成物：SQLite 数据库（主库、checkpoint、偏好存储）
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# 运行生成物：知识索引、导出报告、日志
+data/knowledge_index.json
+data/exports/
+exports/
+logs/
+*.log
+
+# 评估结果由脚本按时间戳生成，不入库
+eval/results/
+
+# 标准答案 data/ground_truth.json 由 scripts/compute_ground_truth.py 生成（固定种子，可复现）。
+# 本仓库允许提交它作为对照物；若你的分支不想提交，取消下面一行注释。
+# data/ground_truth.json
+
+# uv.lock 由学习者机器执行 `uv lock` / `uv sync` 生成；生成后应提交入库以保证可复现。
+# 本仓库交付时不包含伪造锁文件（见 docs/verification.md），因此这里不忽略它。
+
+# 编辑器与系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
