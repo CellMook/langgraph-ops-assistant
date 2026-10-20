@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from ops_assistant.workflow.persistence import AppRuntime
+from ops_assistant.workflow.persistence import AppRuntime, ThreadNotFoundError
 
 MAIN_QUESTION = (
     "2026 年九月销售额比八月变化多少？按地区分解差额，并说明销售额是否扣除了退款。"
@@ -148,7 +148,7 @@ def test_t22_export_uses_atomic_replace(runtime: AppRuntime, pending: dict[str, 
 # ---------------------------------------------------------------------------
 
 
-def test_t22_state_survives_restart(settings) -> None:
+def test_t22_state_survives_restart(settings, db_summary: dict) -> None:
     """T22：用 SQLite 检查点时，进程重启后仍能读到待审批状态并完成审批。"""
     first_process = AppRuntime.create(settings)
     try:
@@ -174,7 +174,7 @@ def test_t22_state_survives_restart(settings) -> None:
         second_process.close()
 
 
-def test_t22_memory_checkpointer_does_not_survive(tmp_path, settings) -> None:
+def test_t22_memory_checkpointer_does_not_survive(tmp_path, settings, db_summary: dict) -> None:
     """T22：InMemorySaver 只适合测试；"重启"后同一 thread 读不到状态。"""
     first = AppRuntime.create(settings, use_memory_checkpointer=True)
     try:
@@ -185,7 +185,7 @@ def test_t22_memory_checkpointer_does_not_survive(tmp_path, settings) -> None:
 
     second = AppRuntime.create(settings, use_memory_checkpointer=True)
     try:
-        with pytest.raises(Exception):
+        with pytest.raises(ThreadNotFoundError):
             second.read_thread(thread_id)
     finally:
         second.close()

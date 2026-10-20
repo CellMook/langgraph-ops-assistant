@@ -90,11 +90,18 @@ def test_t20_tables_and_chart_payload(runtime: AppRuntime) -> None:
 
 
 def test_t20_budget_within_limits(runtime: AppRuntime) -> None:
-    """T20：正常一轮不应撞到预算上限（工具调用数不超过配置上限）。"""
+    """T20：正常一轮不应撞到预算上限（本轮工具调用数不超过配置上限）。
+
+    说明：``turn["metrics"]`` 是**进程级累计值**（跨请求累加，适合 /api/usage），
+    单轮的步数/工具调用计数按规格 5.10 合并在 ``turn["usage"]`` 里
+    （``usage.steps`` / ``usage.tool_calls``，来自图状态 ``budget``）。
+    """
     turn = runtime.invoke_turn(MAIN_QUESTION)
-    metrics = turn["metrics"]
-    assert metrics["tool_calls"] <= runtime.settings.max_tool_calls
-    assert metrics["elapsed_ms"] >= 0
+    usage = turn["usage"]
+    assert usage["tool_calls"] <= runtime.settings.max_tool_calls
+    assert usage["steps"] <= runtime.settings.max_steps
+    assert usage["elapsed_ms"] >= 0
+    assert turn["metrics"]["elapsed_ms"] >= 0
 
 
 def test_t20_usage_reports_no_model_calls(runtime: AppRuntime) -> None:
@@ -179,7 +186,7 @@ def test_t21_invalid_month_fails_with_readable_error(runtime: AppRuntime) -> Non
     assert turn["clarification"] or turn["errors"]
 
 
-def test_t21_budget_exhaustion_uses_fail_exit(settings) -> None:
+def test_t21_budget_exhaustion_uses_fail_exit(settings, db_summary: dict) -> None:
     """T21：把 max_steps 调到很小，图应停在统一失败出口而不是抛递归异常。"""
     tight = dataclasses.replace(settings, max_steps=2)
     runtime = AppRuntime.create(tight, use_memory_checkpointer=True)

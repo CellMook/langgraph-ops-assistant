@@ -27,7 +27,7 @@ import dataclasses
 import json
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -85,13 +85,22 @@ def _nodes_of(turn: dict[str, Any]) -> list[str]:
 
 
 def _run_case(runtime: AppRuntime, case: dict[str, Any]) -> dict[str, Any]:
-    """执行单条用例并返回记录（不做断言，失败也记录实际结果）。"""
+    """执行单条用例并返回记录（不做断言，失败也记录实际结果）。
+
+    状态比较规则（避免"用例语义混用"导致假性不匹配）：
+        - ``expect_status_at`` 缺省为 ``"question"``：``expect_status`` 描述
+          **提问那一轮**结束时的状态（例如停在 ``awaiting_approval``），
+          审批 flow 只是收尾动作，不参与比较；
+        - ``expect_status_at="final"``：``expect_status`` 描述 **flow 执行完**
+          的终态（例如 E13 的 ``approved``、E14 的 ``rejected``）。
+    """
     started = time.perf_counter()
     record: dict[str, Any] = {
         "id": case.get("id"),
         "category": case.get("category"),
         "question": case.get("question"),
         "expected_status": case.get("expect_status"),
+        "expect_status_at": case.get("expect_status_at", "question"),
         "flow": case.get("flow", "none"),
         "notes": case.get("note", ""),
     }
@@ -106,23 +115,33 @@ def _run_case(runtime: AppRuntime, case: dict[str, Any]) -> dict[str, Any]:
 
         turn = runtime.invoke_turn(case["question"], thread_id=thread_id)
         thread_id = turn["thread_id"]
+        status_at_question = turn.get("status")
 
         flow = str(case.get("flow") or "none")
+        flow_applied = False
         if flow == "approve" and turn.get("interrupt") is not None:
             turn = runtime.resume_turn(thread_id, "approve")
+            flow_applied = True
         elif flow == "reject" and turn.get("interrupt") is not None:
             turn = runtime.resume_turn(thread_id, "reject")
+            flow_applied = True
         elif flow == "edit" and turn.get("interrupt") is not None:
             edited = str(turn.get("report") or "") + "\n\n> 人工确认：措辞已核对，数字未改动。\n"
             turn = runtime.resume_turn(thread_id, "edit", edited_report=edited)
+            flow_applied = True
 
+        compare_at_final = flow_applied and record["expect_status_at"] == "final"
+        compared_status = turn.get("status") if compare_at_final else status_at_question
         nodes = _nodes_of(turn)
         expected_nodes = [str(item) for item in (case.get("expect_trace_contains") or [])]
         record.update(
             {
                 "thread_id": thread_id,
-                "actual_status": turn.get("status"),
-                "status_match": turn.get("status") == case.get("expect_status"),
+                "status_at_question": status_at_question,
+                "final_status": turn.get("status"),
+                "flow_applied": flow_applied,
+                "actual_status": compared_status,
+                "status_match": compared_status == case.get("expect_status"),
                 "missing_expected_nodes": [
                     node for node in expected_nodes if node not in nodes
                 ],
@@ -193,7 +212,7 @@ def run(
     return {
         "meta": {
             "generated_by": "eval/run_eval.py",
-            "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "generated_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
             "request_id": new_request_id(),
             "case_file": str(DEFAULT_CASES.name),
             "model_enabled": bool(getattr(settings, "llm_enabled", False)),
@@ -253,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     report = run(cases, settings, verbose=args.verbose)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out_path = args.out_dir / f"deterministic-{stamp}.json"
     out_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

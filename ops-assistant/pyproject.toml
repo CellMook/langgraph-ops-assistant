@@ -42,7 +42,9 @@ addopts = "-ra"
 
 [tool.ruff]
 target-version = "py311"
-line-length = 100
+# 行宽按"显示宽度"计：中文注释/文档每个汉字占 2 列，100 列只能放约 50 个汉字，
+# 对本项目的中文 docstring 过紧；120 列（约 60 汉字）与主流 CJK 项目一致。
+line-length = 120
 src = ["src", "tests"]
 
 [tool.ruff.lint]

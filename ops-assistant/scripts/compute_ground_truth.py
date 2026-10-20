@@ -29,7 +29,7 @@ import json
 import platform
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -618,7 +618,7 @@ def compute_ground_truth(db_path: Path) -> dict[str, Any]:
             "seed": SEED,
             "months": months,
             "generated_by": "compute_ground_truth.py",
-            "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "generated_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
             "python_version": platform.python_version(),
             "sqlite_version": sqlite3.sqlite_version,
             "data_range": {"first": DATA_FIRST_MONTH, "last": DATA_LAST_MONTH},

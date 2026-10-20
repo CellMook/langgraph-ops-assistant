@@ -65,7 +65,7 @@ cp .env.example .env        # Windows PowerShell: copy .env.example .env
 | `OPS_LOG_LEVEL` | `INFO` | `DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL` | 非法值打警告并回退 `INFO` |
 | `OPS_APP_ENV` | `dev` | `dev`/`test`/`prod` | 非法值打警告并回退 `dev` |
 
-> 注意：单轮预算只统计 `knowledge` 与 `compute` 两个节点，**不统计**规则解析、取数、渲染等确定性步骤；`recursion_limit` 取 `max(4, max_steps * 2)`（见 `workflow/persistence.py` 的 `_config`）。所以把 `OPS_MAX_STEPS` 调到 1 会立刻触发预算失败——这正是演示"失败路径"最省事的方法。
+> 注意：**步数预算**（`max_steps`）统计每个进入的节点（understand/knowledge/data/repair/compute/draft/review/export 各消耗 1 步）；**工具预算**（`max_tool_calls`）只统计"分析/检索类"调用（知识检索、月份查询、地区查询、修复探活），可用月份/地区这类元数据读取与确定性纯计算不计入。`recursion_limit` 取 `max(8, max_steps * 2)`（见 `workflow/persistence.py` 的 `_config`，是框架级保险丝，不是业务预算）。所以把 `OPS_MAX_STEPS` 调到 1 会立刻触发预算失败——这正是演示"失败路径"最省事的方法。
 
 ### 探测模型能力（有 key 时先做这一步）
 
@@ -90,7 +90,7 @@ uv run python scripts/bootstrap.py
 | 演示数据库 | `data/ops.db` | 5 个地区、12 个商品、4 个渠道、`2025-01` 至 `2026-09` 的订单与退款，种子 `SEED = 20260901` |
 | 知识索引 | `data/knowledge_index.json` | 由 `data/knowledge/*.md` 四篇文档（指标口径 / 退款与归属 / 地区说明 / 数据字典）切分并向量化 |
 | 标准答案 | `data/ground_truth.json` | 由**独立脚本**重算，用于和项目自身计算做交叉核对 |
-| 日志 | `data/logs/ops-assistant.log` | UTF-8 追加，密钥字段自动脱敏 |
+| 日志 | `logs/ops-assistant.log` | UTF-8 追加，密钥字段自动脱敏 |
 
 常用变体：
 
@@ -126,7 +126,7 @@ uv run python scripts/compute_ground_truth.py --db data/ops.db --out data/ground
 uv run python scripts/run_cli.py -q "2026 年九月销售额比八月变化多少？按地区分解差额，并说明销售额是否扣除了退款。"
 ```
 
-**预期（未运行，静态推演）**：打印 `会话 / 状态：awaiting_approval / 答复 / 8 段报告 / 执行轨迹 / 来源 / 预算 / 审批摘要`。
+**实测（2026-10-19，Linux 沙箱 + Python 3.11 + uv 0.13.1）**：打印 `会话 / 状态：awaiting_approval / 答复 / 8 段报告 / 执行轨迹 / 来源 / 预算 / 审批摘要`；`--resume approve` 导出 `data/exports/report-<thread_id>.md`，重复 approve 返回同一路径（幂等）。
 
 ```bash
 uv run python scripts/run_cli.py --thread-id <thread_id> --resume approve --comment "OK"

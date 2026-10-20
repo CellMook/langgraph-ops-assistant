@@ -635,7 +635,7 @@ _output 下的文件 = ['report-demo.md']
 
 > 第 1 段的 `REPLAYS` 只有 2 条，是关键证据：`interrupt()` 让图**停住**了，后面的 `review:after_interrupt` 根本没执行。第 2 段的 `REPLAYS` 里 `review:before_interrupt` 出现**两次**，这就是"恢复时节点重跑"。
 >
-> **未验证**：`StateSnapshot.next` 的具体类型在不同版本里可能是 tuple 也可能是 list；`extract_interrupt` 的 `.interrupts` / `.tasks[*].interrupts` 两条路径也依赖版本。项目源码里两处都做了兼容，实验照抄了同样的兼容写法。
+> **已验证（2026-10-19，langgraph 1.2.16 实测）**：`StateSnapshot.next`、`snapshot.interrupts`、`task.interrupts` 三者都是 **tuple**（例如 `next = ('n2',)`）。项目源码 `extract_interrupt` 对 `.interrupts` 与 `.tasks[*].interrupts` 两条路径都做了兼容，实验照抄了同样的兼容写法——在 1.2.16 上生效的是 `snapshot.interrupts` 这条。
 
 ### 6.2 关键状态变化
 

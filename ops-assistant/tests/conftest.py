@@ -20,9 +20,10 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable, Iterator
+from typing import Any
 
 import pytest
 

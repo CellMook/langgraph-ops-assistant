@@ -59,8 +59,12 @@ def test_t01_schema_has_indexes(tmp_path: Path) -> None:
         connection.close()
 
 
-def test_t01_schema_rejects_invalid_status(settings) -> None:
-    """T01：退款状态 CHECK 约束拒绝非法值（'unknown' 不是允许值）。"""
+def test_t01_schema_rejects_invalid_status(settings, db_summary: dict) -> None:
+    """T01：退款状态 CHECK 约束拒绝非法值（'unknown' 不是允许值）。
+
+    依赖 ``db_summary``（而不只是 ``settings``）：session 级 ``settings`` 夹具只建目录，
+    数据库由 ``db_summary`` 负责生成；单跑本文件时避免"表不存在"的假失败。
+    """
     connection = connect(settings.db_path)
     try:
         order_id = connection.execute("SELECT order_id FROM orders LIMIT 1").fetchone()[0]
@@ -75,7 +79,7 @@ def test_t01_schema_rejects_invalid_status(settings) -> None:
         connection.close()
 
 
-def test_t01_schema_rejects_non_positive_amount(settings) -> None:
+def test_t01_schema_rejects_non_positive_amount(settings, db_summary: dict) -> None:
     """T01：退款金额 CHECK 约束拒绝 0 与负数。"""
     connection = connect(settings.db_path)
     try:

@@ -197,10 +197,26 @@ def test_t06_negative_net_exists_in_2026_03(conn) -> None:
 
 
 def test_t06_missing_region_month_is_zero_not_error(conn) -> None:
-    """T06：东北 2025-09 无订单，查询不报错且金额为 0。"""
+    """T06：东北 2025-09 无订单，查询不报错；跨月退款仍按退款月归属。
+
+    边界语义（实测核对，种子 SEED=20260901）：
+        - 东北在 2025-09 没有任何订单，所以 gross_cents=0、order_count=0；
+        - 但存在一笔 2025-08 订单的 approved 退款落在 2025-09（refund_date 归属），
+          因此 refund_cents>0、net_cents=-refund_cents<0——"无订单月"不等于"净额为 0"；
+        - 全零的地区缺月用 2026-08 验证（东北当月既无订单也无退款）。
+    """
     regions = {item.region_id: item for item in get_region_breakdown(conn, "2025-09")}
-    assert regions["R_NE"].order_count == 0
-    assert regions["R_NE"].net_cents == 0
+    northeast = regions["R_NE"]
+    assert northeast.order_count == 0
+    assert northeast.gross_cents == 0
+    assert northeast.refund_cents >= 0
+    assert northeast.net_cents == -northeast.refund_cents  # 口径自洽：net = gross - refund
+
+    august = {item.region_id: item for item in get_region_breakdown(conn, "2026-08")}
+    assert august["R_NE"].gross_cents == 0
+    assert august["R_NE"].refund_cents == 0
+    assert august["R_NE"].net_cents == 0
+    assert august["R_NE"].order_count == 0
 
 
 def test_t06_list_available_months_excludes_empty_month(conn) -> None:

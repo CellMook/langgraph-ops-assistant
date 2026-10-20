@@ -16,10 +16,11 @@ import json
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -149,7 +150,24 @@ def _build_llm(settings: Any) -> Any:
 
 def _now_iso() -> str:
     """返回 UTC 的 ISO8601 时间字符串（秒精度）。"""
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _unwrap_preference_value(value: Any) -> Any:
+    """把存储层的 ``{"value": X}`` 包装还原成标量 ``X``。
+
+    仅当 value 是**只含 ``value`` 一个键**且内层不是 dict/list 的 dict 时才解包；
+    真正的 dict 偏好值原样返回。这样 ``all_for_user`` 的返回值既能覆盖
+    ``set_many`` 写入的标量偏好，也不会误伤未来可能出现的 dict 偏好。
+    """
+    if (
+        isinstance(value, dict)
+        and len(value) == 1
+        and "value" in value
+        and not isinstance(value["value"], (dict, list))
+    ):
+        return value["value"]
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +187,7 @@ class PreferenceItem:
 
 
 class PreferenceStore:
-    """会话级偏好的 SQLite 持久化存储（教学용 Store 适配器）。
+    """会话级偏好的 SQLite 持久化存储（教学用 Store 适配器）。
 
     实现 ``get / put / search / all_for_user / set_many`` 五个方法，因此既能直接给
     节点当"偏好读写器"用，也能作为 Store 适配器注入 ``builder.compile(store=...)``。
@@ -295,7 +313,13 @@ class PreferenceStore:
             user_id: 用户标识。
 
         返回：
-            dict：``{key: value}``；没有记录时返回空 dict。
+            dict：``{key: 标量值}``；没有记录时返回空 dict。
+
+        说明：
+            ``put`` / ``set_many`` 落盘时统一写成 ``{"value": X}``（与官方 Store 的
+            ``Item.value`` 是 dict 对齐）；这里必须解包回标量 ``X``（例如 ``"万元"``），
+            否则 ``effective_preferences`` 做取值校验时会拿到 dict 而抛
+            ``TypeError: unhashable type: 'dict'``。
         """
         with self._lock:
             rows = self._conn.execute(
@@ -304,7 +328,7 @@ class PreferenceStore:
             ).fetchall()
         values: dict[str, Any] = {}
         for row in rows:
-            values[str(row["key"])] = self._row_to_item(row).value
+            values[str(row["key"])] = _unwrap_preference_value(self._row_to_item(row).value)
         return values
 
     def set_many(self, user_id: str, values: dict[str, Any]) -> None:
@@ -518,10 +542,23 @@ class AppRuntime:
         }
 
     def _config(self, thread_id: str, user_id: str, request_id: str) -> dict[str, Any]:
-        """构造 invoke 配置：thread_id 隔离 + recursion_limit = max_steps * 2。"""
+        """构造 invoke 配置：thread_id 隔离 + recursion_limit（框架保险丝）。
+
+        关于 ``recursion_limit`` 的取值：
+            它只做"兜底保险丝"，真正的预算控制由节点的 ``BudgetTracker`` 完成。
+            最坏路径长度 ≈ ``max_steps`` 个消耗预算的节点 + 1 个 skip 节点 +
+            ``clarify``/``fail`` 两个不消耗预算的节点，再加 1 的框架计数余量，
+            即 ``max_steps + 4``；同时 LangGraph 在执行完第 ``recursion_limit``
+            个超级步后仍需要一次调度判断，所以下限取 8 才能覆盖 ``max_steps``
+            很小的实验场景（例如测试里 ``max_steps=2`` 时路径为
+            understand → knowledge → data(skip) → fail，共 4 步 + 1）。
+            早期版本写成 ``max(4, max_steps * 2)``，在 ``max_steps <= 2`` 时会先于
+            BudgetTracker 触发 ``GraphRecursionError``，被 ``invoke_turn`` 收敛成
+            ``status="failed"`` 而不是设计要求的 ``budget_exceeded``。
+        """
         return {
             "configurable": {"thread_id": thread_id, "user_id": user_id},
-            "recursion_limit": max(4, self.max_steps * 2),
+            "recursion_limit": max(8, self.max_steps * 2),
             "metadata": {
                 "thread_id": thread_id,
                 "user_id": user_id,
@@ -837,8 +874,15 @@ class AppRuntime:
             "request_id": request_id,
         }
 
-    def _usage_snapshot(self, started: float) -> dict[str, Any]:
-        """返回用量快照：模型侧累计 token + 进程侧调用计数。"""
+    def _usage_snapshot(self, started: float, values: dict[str, Any] | None = None) -> dict[str, Any]:
+        """返回用量快照：模型侧累计 token + 本轮图状态计数 + 请求耗时。
+
+        参数：
+            started: 请求起点（time.perf_counter 值）。
+            values: 图状态字典；提供时按规格 5.10 把 ``budget`` 里的本轮
+                步数/工具调用计数合并进来（``steps`` / ``tool_calls`` /
+                ``max_steps`` / ``max_tool_calls``）。
+        """
         raw: dict[str, Any] = {}
         usage = getattr(self.llm, "usage", None)
         if callable(usage):
@@ -850,13 +894,23 @@ class AppRuntime:
                 raw = {}
         prompt_tokens = int(raw.get("prompt_tokens") or 0)
         completion_tokens = int(raw.get("completion_tokens") or 0)
-        return {
+        snapshot: dict[str, Any] = {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": int(raw.get("total_tokens") or (prompt_tokens + completion_tokens)),
             "model_calls": int(raw.get("model_calls") or 0),
             "elapsed_ms": elapsed_ms_since(started),
         }
+        if values is not None:
+            budget = values.get("budget") if isinstance(values.get("budget"), dict) else {}
+            snapshot["steps"] = int(budget.get("steps") or 0)
+            snapshot["max_steps"] = int(budget.get("max_steps") or self.max_steps)
+            snapshot["tool_calls"] = int(budget.get("tool_calls") or 0)
+            snapshot["max_tool_calls"] = int(
+                budget.get("max_tool_calls")
+                or int(getattr(self.settings, "max_tool_calls", 8) or 8)
+            )
+        return snapshot
 
     def _turn_result(
         self,
@@ -886,19 +940,29 @@ class AppRuntime:
                 pending = _extract_interrupt(source)
             except Exception:  # 读快照失败不影响返回已有状态
                 pending = None
+        # 报告字段的取值规则：
+        #   approved → final_report（export 节点保证与落盘内容一致）；
+        #   awaiting_approval → final_report 为空时回退 draft_report（UI 要预览草稿）；
+        #   rejected → 只认 final_review 置空的 final_report，绝不回退草稿，
+        #             否则"拒绝后仍能看到报告"会被误读成"其实导出了"。
+        report = str(values.get("final_report") or "")
+        if not report and status != "rejected":
+            report = str(values.get("draft_report") or "")
         return {
             "thread_id": thread_id,
             "status": status,
             "answer": _answer_text(values),
-            "report": str(values.get("final_report") or values.get("draft_report") or ""),
+            "report": report,
             "clarification": str(values.get("clarification") or ""),
             "interrupt": pending,
             "sources": [item for item in (values.get("sources") or []) if isinstance(item, dict)],
             "tables": [item for item in (values.get("tables") or []) if isinstance(item, dict)],
             "chart": values.get("chart") if isinstance(values.get("chart"), dict) else None,
             "trace": [item for item in (values.get("trace") or []) if isinstance(item, dict)][-200:],
-            "usage": self._usage_snapshot(started),
-            "metrics": self.metrics.snapshot(),
+            "usage": self._usage_snapshot(started, values=values),
+            # metrics 是进程级累计值（model_calls/tool_calls/errors 跨请求累加），
+            # 单轮的步数与工具调用计数看 usage.steps / usage.tool_calls。
+            "metrics": self.metrics.snapshot(started_at=started),
             "errors": [str(item) for item in (values.get("errors") or [])],
             "export_path": str(values.get("export_path") or "") or None,
             "request_id": request_id,

@@ -106,14 +106,14 @@
 
 ```python
 class PreferenceStore:
-    """会话级偏好的 SQLite 持久化存储（教学용 Store 适配器）。
+    """会话级偏好的 SQLite 持久化存储（教学用 Store 适配器）。
 
     实现 ``get / put / search / all_for_user / set_many`` 五个方法，因此既能直接给
     节点当"偏好读写器"用，也能作为 Store 适配器注入 ``builder.compile(store=...)``。
     ...
 ```
 
-> **注意**：上面那行 docstring 里混进了一个非中文字符（"教学용"），是源码里的笔误，不影响运行；本单元照抄以保持"和源码一致"，发现后你可以顺手提一个修复 PR。
+> **勘误（已修复）**：早期源码的这行 docstring 里混进过一个非中文字符（"教学용"，韩文），不影响运行；2026-10-19 审查时已在 `persistence.py` 里改为"教学用"，本单元引文同步更新。
 
 它真实提供的接口（`persistence.py` 第 233、242、266、291、310、348 行）：
 

@@ -16,11 +16,12 @@ import inspect
 import re
 import sqlite3
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from langchain_core.messages import AIMessage
 from langgraph.runtime import Runtime
@@ -243,7 +244,7 @@ def _opt_float(value: Any) -> float | None:
 
 def _now_iso() -> str:
     """返回 UTC 的 ISO8601 时间字符串（秒精度）。"""
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _entry(
@@ -1440,7 +1441,9 @@ def compute_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> d
     edge_flags = {
         "current_no_records": (not current_has_orders) and order_count == 0,
         "true_zero": order_count == 0 and current_gross == 0 and refund_cents == 0 and current_net == 0,
-        "previous_no_records": previous_order_count == 0 and previous_net == 0 and not previous_sales.get("has_orders"),
+        "previous_no_records": (
+            previous_order_count == 0 and previous_net == 0 and not previous_sales.get("has_orders")
+        ),
         "base_zero": base_zero,
         "negative_net": current_net < 0 or previous_net < 0,
         "pending_refunds": pending_refund_count,
@@ -1549,6 +1552,9 @@ def compute_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> d
         "delta_net_cents": delta_net,
         "pct_change": pct_change,
         "base_zero": base_zero,
+        # regions 是 region_deltas 的对外别名（规格 5.10/T21 用 calculation["regions"]
+        # 读取地区分解；保留 region_deltas 以兼容既有教程与文档引用）。
+        "regions": region_deltas,
         "region_deltas": region_deltas,
         "region_delta_sum_cents": region_delta_sum,
         "regions_filter": regions_filter,
@@ -1670,7 +1676,11 @@ def draft_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> dic
     thread_id = str(state.get("thread_id") or "")
     status = _status(state)
     if status in {"failed", "budget_exceeded"}:
-        return {"status": status, "draft_report": "", "trace": [_entry("draft", "skip", False, started, {"reason": status})]}
+        return {
+            "status": status,
+            "draft_report": "",
+            "trace": [_entry("draft", "skip", False, started, {"reason": status})],
+        }
     budget, blocked = _guard_step(state, deps, node="draft", started=started)
     if blocked is not None:
         return blocked
@@ -1889,7 +1899,12 @@ def review_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> di
             "approval_decision",
             True,
             resumed_at,
-            {"decision": decision or "（无法识别）", "has_comment": bool(comment), "edited": bool(edited), "waited_ms": waited_ms},
+            {
+                "decision": decision or "（无法识别）",
+                "has_comment": bool(comment),
+                "edited": bool(edited),
+                "waited_ms": waited_ms,
+            },
         )
     ]
     errors: list[str] = []

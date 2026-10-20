@@ -11,8 +11,9 @@ import logging
 import sqlite3
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any
 
 # 允许在未安装（uv sync 之前）时直接从源码运行：把 src 加入模块搜索路径。
 # 仅当 ops_assistant 确实不可导入时才插入，避免影响已安装环境。
@@ -58,7 +59,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _load_settings() -> "Settings":
+def _load_settings() -> Settings:
     """延迟导入并读取设置。
 
     返回：
@@ -73,7 +74,7 @@ def _load_settings() -> "Settings":
     return load_settings()
 
 
-def _ensure_dirs(settings: "Settings") -> None:
+def _ensure_dirs(settings: Settings) -> None:
     """创建运行目录（幂等）。
 
     参数：
@@ -87,7 +88,7 @@ def _ensure_dirs(settings: "Settings") -> None:
     ensure_dirs(settings)
 
 
-def _setup_logging(settings: "Settings") -> Path | None:
+def _setup_logging(settings: Settings) -> Path | None:
     """配置控制台与文件日志。
 
     参数：
@@ -101,7 +102,7 @@ def _setup_logging(settings: "Settings") -> Path | None:
     return setup_logging(settings.log_level, log_dir=Path(settings.log_dir))
 
 
-def _generate_database(settings: "Settings") -> dict[str, Any]:
+def _generate_database(settings: Settings) -> dict[str, Any]:
     """调用数据层生成演示数据库。
 
     参数：
@@ -122,7 +123,7 @@ def _generate_database(settings: "Settings") -> dict[str, Any]:
     return {"raw": result}
 
 
-def _collect_db_counts(settings: "Settings") -> dict[str, int]:
+def _collect_db_counts(settings: Settings) -> dict[str, int]:
     """统计数据库中关键表的行数。
 
     参数：
@@ -149,7 +150,7 @@ def _collect_db_counts(settings: "Settings") -> dict[str, int]:
     return counts
 
 
-def _build_knowledge(settings: "Settings") -> "KnowledgeBase":
+def _build_knowledge(settings: Settings) -> KnowledgeBase:
     """构建知识索引并返回知识库对象。
 
     参数：
@@ -168,7 +169,7 @@ def _build_knowledge(settings: "Settings") -> "KnowledgeBase":
     return KnowledgeBase.build(settings)
 
 
-def _knowledge_stats(knowledge_base: "KnowledgeBase") -> dict[str, Any]:
+def _knowledge_stats(knowledge_base: KnowledgeBase) -> dict[str, Any]:
     """读取知识库统计信息，失败时返回空字典（摘要失败不应中断初始化）。
 
     参数：
@@ -204,7 +205,7 @@ def _count_knowledge_docs(knowledge_dir: Path) -> int:
     )
 
 
-def _run_ground_truth(settings: "Settings") -> Path | None:
+def _run_ground_truth(settings: Settings) -> Path | None:
     """用当前 Python 解释器执行 scripts/compute_ground_truth.py。
 
     参数：
@@ -310,7 +311,7 @@ def _format_mapping(data: Mapping[str, Any], *, limit: int = 4) -> str:
 
 
 def _print_summary(
-    settings: "Settings",
+    settings: Settings,
     *,
     generator_summary: Mapping[str, Any],
     db_counts: Mapping[str, int],

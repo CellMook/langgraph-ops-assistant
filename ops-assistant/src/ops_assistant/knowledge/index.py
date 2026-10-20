@@ -49,7 +49,7 @@ class VectorIndex:
         embeddings: Any,
         *,
         meta: dict[str, Any] | None = None,
-    ) -> "VectorIndex":
+    ) -> VectorIndex:
         """向量化全部知识块并构建索引。
 
         参数：
@@ -105,7 +105,7 @@ class VectorIndex:
 
         query_vector = [float(value) for value in embeddings.embed_query(query)]
         scored: list[SearchHit] = []
-        for chunk, vector in zip(self.chunks, self.vectors):
+        for chunk, vector in zip(self.chunks, self.vectors, strict=False):
             score = _cosine_similarity(query_vector, vector)
             if score > 0.0:
                 scored.append(SearchHit(chunk=chunk, score=score, method="vector"))
@@ -142,7 +142,7 @@ class VectorIndex:
         os.replace(str(temp_path), str(target))
 
     @classmethod
-    def load(cls, path: Path) -> "VectorIndex":
+    def load(cls, path: Path) -> VectorIndex:
         """从 JSON 文件加载索引。
 
         参数：
@@ -205,7 +205,7 @@ def _cosine_similarity(left: list[float], right: list[float]) -> float:
     dot = 0.0
     left_norm = 0.0
     right_norm = 0.0
-    for left_value, right_value in zip(left, right):
+    for left_value, right_value in zip(left, right, strict=True):
         dot += left_value * right_value
         left_norm += left_value * left_value
         right_norm += right_value * right_value

@@ -20,10 +20,11 @@ import calendar
 import json
 import random
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from .db import connect, init_schema
 

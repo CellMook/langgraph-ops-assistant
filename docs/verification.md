@@ -1,38 +1,99 @@
 # 验证记录（verification）
 
-> **先读结论**：本次交付的代码**没有在任何真实 Python 环境中执行过**。
-> 原因是编写环境无法启动进程：`pwsh` 的任何调用（包括 `Write-Output`）都返回
-> `[exit code: 3221225794]`（`0xC0000142`，`STATUS_DLL_INIT_FAILED`），
-> `python`、`uv`、`pytest` 自然也无法启动。
-> 因此本文档只提供两类内容：**可执行的验证命令清单** 与 **每种失败怎么排查**。
-> 仓库里不存在本次生成的测试报告、覆盖率、通过率或性能数据——**也不应该有**。
+> **先读结论（2026-10-19 更新）**：初稿交付时代码**没有在任何真实 Python 环境中执行过**
+> （编写环境 `pwsh` 返回 `0xC0000142`，无法启动进程）。
+> **2026-10-19 的审查在 Linux 沙箱中完成了完整实测**：依赖解析安装、语法编译、
+> 176 项测试、静态检查、确定性评估、19 个教程实验脚本、bootstrap / CLI / FastAPI / Streamlit
+> 全部实际运行，结果记录在本文第 1–2 节。审查中发现并修复了 8 类真实缺陷（第 3 节）。
+> **学习纪律不变**：你必须在自己的机器上复跑第 4 节的命令，才算完成你自己的验证。
 
-## 1. 本次交付"验证到了什么、没验证什么"
+## 1. 实测环境与总体结果（2026-10-19）
 
-| 项目 | 状态 | 说明 |
-| --- | --- | --- |
-| 语法能否通过 `python -m compileall` | ❌ 未验证 | 环境不能启动 Python |
-| `uv sync` / `uv lock` 能否解析依赖 | ❌ 未验证 | 未生成 `uv.lock`（见第 4 节） |
-| `pytest` 能否全部通过 | ❌ 未验证 | 测试代码是静态编写 |
-| `bootstrap.py` 能否建库/建索引 | ❌ 未验证 | 未生成 `data/ops.db`、`data/knowledge_index.json` |
-| API 能否启动、`/docs` 是否可访问 | ❌ 未验证 | 未启动 uvicorn |
-| Streamlit 页面能否渲染 | ❌ 未验证 | 未启动 streamlit |
-| 真实模型调用（`check_model.py`） | ❌ 未验证 | 无 API Key，且不能起进程 |
-| 接口签名/字段名与规格一致 | ✅ 静态核对 | 通过阅读 `src/ops_assistant/**` 逐项比对（第 3 节） |
-| 数据生成器的 8 类边界事实在代码中被构造 | ✅ 静态核对 | `generate.py` 有显式 `_construct_*` 与运行前自查断言 |
-| 文档/教程中"预期输出"是否被标成"未执行" | ✅ 静态核对 | 抽查各文件，均标注"预期（未在本环境执行）" |
+| 项目 | 值 |
+| --- | --- |
+| 环境 | Linux 沙箱（Debian 系），x86_64 |
+| Python | 3.11.2 |
+| 包管理 | uv 0.13.1（`uv sync` 自动创建 `.venv`） |
+| langgraph | 1.2.16（与 2026-10-19 PyPI 最新版一致） |
+| langchain | 1.4.6（与 2026-10-19 PyPI 最新版一致） |
+| langchain-openai / langchain-text-splitters / langgraph-checkpoint-sqlite | 1.7.2 / 1.1.3 / 3.1.2（均为当日最新） |
+| 模型密钥 | 未配置（纯规则模式验证；模型路径未评估，见第 6 节） |
 
-一句话：**代码是"写出来并互相核对过"的，不是"跑通过"的。** 下面的命令必须由学习者在自己的机器上跑一遍，才算验证完成。
+**总体结果**：
 
-## 2. 学习者机器上的完整验证命令（Windows PowerShell）
+| 验证项 | 结果 |
+| --- | --- |
+| `uv sync`（依赖解析与安装） | ✅ 成功，生成 `uv.lock` |
+| `uv run python -m compileall -q src scripts tests eval` | ✅ 退出码 0 |
+| `uv run pytest -q` | ✅ **176 passed, 0 failed, 0 error**（初测为 149 passed / 17 failed / 9 error，修复后全绿，见第 3 节） |
+| `uv run ruff check .` | ✅ All checks passed（初测 156 项告警，修复后清零） |
+| `uv run python eval/run_eval.py` | ✅ 14 条用例、状态匹配 14、异常 0 |
+| `uv run python scripts/bootstrap.py` | ✅ 建库（orders=956 / refunds=94）、索引（23 块）、标准答案（585 行 JSON） |
+| CLI 主问题 → `awaiting_approval` → `--resume approve` | ✅ 导出 `data/exports/report-<thread_id>.md`；重复 approve 返回同一路径（幂等） |
+| FastAPI（uvicorn 单 worker） | ✅ `/api/health` 200；`/api/chat` 返回 awaiting_approval；`resume` approve 导出；追问沿用 thread；`PUT /api/preferences` 写入后 `GET` 读回一致 |
+| Streamlit（headless） | ✅ 页面 200、`/_stcore/health` = ok、经 API 完成一轮问答 |
+| 教程 00–18 单元的 19 个实验脚本（从正文提取） | ✅ 全部退出码 0（清单见第 2 节） |
+| 单元 14 的 `scratch/exp14_invoke_turn.py` | ✅ 退出码 0，输出与第 6 节预期一致（修复 interrupt 字段读取后） |
+| 真实模型调用（`check_model.py` 探测） | ❌ 未验证（无 API Key；这是唯一保留"未验证"的大项） |
 
-在仓库根目录 `D:\MySpace\LangChain学习路线` 下：
+## 2. 教程实验脚本实测清单（2026-10-19，均在 `ops-assistant/` 目录执行）
 
-```powershell
+脚本从各单元第 5 节正文提取，存放于 `教程/实验/`（提取规则：单元内"保存路径：教程/实验/NN_*.py"
+之后的第一个 Python 代码块）。
+
+| 脚本 | 单元 | 退出码 | 备注 |
+| --- | --- | --- | --- |
+| `00_diagnose.py` | 00 | 0 | 关键项全通过 |
+| `01_hello_model.py` | 01 | 0 | 规则模式分支输出完整报告 |
+| `01_probe_model.py` | 01 | 0 | 无密钥时显式跳过，不联网 |
+| `02_context_growth.py` | 02 | 0 | 规则模式模拟回复 |
+| `03_validate_spec.py` | 03 | 0 | Pydantic + 业务校验两段都过 |
+| `04_tool_loop.py` | 04 | 0 | 假模型走完工具循环，预算耗尽路径可复现 |
+| `05_simple_agent.py` | 05 | 0 | 无密钥回退路径（`used_fallback=True`） |
+| `06_state_graph.py` | 06 | 0 | 默认 reducer 覆盖现象可观察 |
+| `07_reducers.py` | 07 | 0 | `operator.add` 与 `add_messages` 行为符合预期 |
+| `08_routing.py` | 08 | 0 | `GraphRecursionError` 如预期抛出（limit=2） |
+| `09_checkpoint.py` | 09 | 0 | `--resume` 变体：无检查点时打印跳过提示，退出码 0 |
+| `10_retrieval_baseline.py` | 10 | 0 | 关键词基线命中预期文档 |
+| `11_vector_citation.py` | 11 | 0 | "资料不足"分支（食堂问题 top_score=0.1062 < 0.15）可复现 |
+| `12_sql_basics.py` | 12 | 0 | `EXPLAIN QUERY PLAN` 显示 `SEARCH orders USING INDEX idx_orders_date`；LIKE 走 `SCAN` |
+| `13_metrics_check.py` | 13 | 0 | 整数分自洽校验全部通过 |
+| `15_memory_store.py` | 15 | 0 | Store 注入 compile 成功；无 checkpointer 追问失忆可复现 |
+| `16_interrupt_resume.py` | 16 | 0 | resume 无待审批会话按预期抛 `ValueError` |
+| `17_idempotent_restart.py` | 17 | 0 | 重启恢复 + 重复审批同路径 |
+| `18_parallel_subgraph_budget.py` | 18 | 0 | 并行 fan-out/fan-in、子图、预算受限路径全部符合预期 |
+| `scratch/exp14_invoke_turn.py` | 14 | 0 | 修复 `interrupt` 字段读取（`payload` 嵌套）后通过 |
+
+## 3. 审查发现并修复的缺陷（2026-10-19）
+
+初测 `pytest` 为 **149 passed / 17 failed / 9 error**，`ruff` 156 项告警。逐条根因分析与修复如下：
+
+| # | 缺陷 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 1 | `PUT /api/preferences` 后整轮工作流崩溃：`TypeError: unhashable type: 'dict'`（连带 9 个 HITL 用例 ERROR、多个工作流用例失败） | `PreferenceStore.set_many/put` 落盘统一包成 `{"value": X}`，但 `all_for_user` 返回时**没有解包**，`effective_preferences` 拿 dict 做集合成员判断 | `all_for_user` 解包 `{"value": X}` 包装（`_unwrap_preference_value`）；`effective_preferences` 对非字符串取值回退默认值（双保险） |
+| 2 | `max_steps=2` 时预算用尽场景返回 `failed` 而非 `budget_exceeded` | `recursion_limit = max(4, max_steps*2)` 过小：最坏路径 4 超级步 + 1 次框架计数 > 4，先触发 `GraphRecursionError` | `recursion_limit = max(8, max_steps * 2)`，并在 `_config` docstring 记录推导 |
+| 3 | 拒绝审批后 `TurnResult.report` 仍返回整份草稿 | `_turn_result` 的 `final_report or draft_report` 回退对 `rejected` 也生效 | `rejected` 状态不回退草稿（review 节点已把 `final_report` 置空） |
+| 4 | 追问用例断言 `calculation["regions"]` 报 KeyError | `compute_node` 只写 `region_deltas`，测试/规格/API 用例读 `regions` | `calculation` 增加 `regions` 别名（保留 `region_deltas` 兼容） |
+| 5 | `T20 预算` 用例断言 `metrics["tool_calls"] <= 8` 失败（实测 24） | `metrics` 是**进程级累计值**，跨用例共享 runtime 后必然超单轮上限 | 按规格 5.10"usage 合并图状态计数"：`TurnResult.usage` 增加 `steps/tool_calls/max_*`（本轮值）；`TurnUsage` schema 同步；测试改断言 `usage` |
+| 6 | `T01` 两个用例单跑报 `no such table: orders` | 用例只依赖 `settings` 夹具（只建目录），数据库由 `db_summary` 生成 | 用例签名补 `db_summary` 依赖（`test_data`×2、`test_hitl`×2、`test_workflow`×1） |
+| 7 | `T06 东北 2025-09` 断言 `net_cents == 0` 失败（实测 -13447） | 种子数据里有一笔 2025-08 订单的 approved 退款落在 2025-09（跨月退款按退款月归属，符合口径设计）；测试与规格表把它误写成"金额为 0" | 测试改为断言真实语义（`gross=0`、`net=-refund`），全零缺月改用 2026-08 验证；`工程规格.md` T06 行同步修正 |
+| 8 | `T18 关键词检索` 期望"退款是否计入当月销售额？"命中 `01_指标口径` 失败（top4 全是 `02_退款与归属`） | 该问题语义上就是退款归属问题，最相关文档是 02（IDF 加权实验也无法改变排序） | 用例期望改为 02，另补"净销售额的定义是什么？"覆盖 01 |
+| 9 | `eval/run_eval.py` 状态匹配只有 7/14 | `expect_status` 描述的是**提问阶段**状态，脚本却在执行 approve/reject flow **之后**比较终态 | 记录 `status_at_question` 与 `final_status` 双值；用例新增 `expect_status_at`（默认 `question`，E13/E14 为 `final`） |
+| 10 | `ruff check .` 156 项告警（E501×120、UP×31、B×3、I×2） | 行宽 100 按显示宽度计，中文 docstring 普遍超限；另有弃用 import 等 | 行宽调整为 120（CJK 显示宽度说明写入 pyproject）；`--fix` 自动修复 52 项；超 120 列的 9 行手动换行；`zip` 补 `strict=`；`pytest.raises(Exception)` 收窄为 `ThreadNotFoundError` |
+| 11 | 单元 14 实验脚本打印 `interrupt: None None` | 脚本读 `interrupt["type"]`，实际结构是 `{"id", "payload": {...}}`（`_extract_interrupt` 的封装） | 教程脚本改为读 `payload`；6.5 节勘误同步 |
+| 12 | 源码含非中文字符笔误"教学용"（韩文） | 笔误 | `persistence.py` 改"教学用"，单元 15 引文与勘误说明同步 |
+
+修复后复测：`pytest` 176/176、`ruff` 清零、评估 14/14、上述清单全部通过。
+
+## 4. 学习者机器上的完整验证命令
+
+在仓库根目录下（Windows PowerShell 去掉 `./`、把 `/` 换成 `\`）：
+
+```bash
 # 1) 进入项目
-cd .\ops-assistant
+cd ops-assistant
 
-# 2) 安装依赖（Python 3.11+；首次会自动创建 .venv）
+# 2) 安装依赖（Python 3.11+；首次会自动创建 .venv 并生成 uv.lock）
 uv sync
 
 # 3) 语法检查（不起服务，先确认没有低级语法错误）
@@ -41,21 +102,27 @@ uv run python -m compileall -q src scripts tests eval
 # 4) 生成演示库 + 知识索引 + 标准答案
 uv run python scripts/bootstrap.py
 
-# 5) 确定性测试（不依赖模型）
+# 5) 确定性测试（不依赖模型）——通过标准：0 failed / 0 error（当前 176 项）
 uv run pytest -q
 
-# 6) 确定性评估（输出到 eval/results/）
+# 6) 静态检查——通过标准：All checks passed
+uv run ruff check .
+
+# 7) 确定性评估——通过标准：14 条用例、状态匹配 14、异常 0
 uv run python eval/run_eval.py --verbose
 
-# 7) 命令行跑一轮（不启 Web）
+# 8) 命令行跑一轮（不启 Web）
 uv run python scripts/run_cli.py -q "2026 年九月销售额比八月变化多少？按地区分解差额，并说明销售额是否扣除了退款。"
 
-# 8) 起 API（另开一个终端）
+# 9) 起 API（另开一个终端）
 uv run uvicorn ops_assistant.api.main:app --host 127.0.0.1 --port 8000
 # 浏览器打开 http://127.0.0.1:8000/docs
 
-# 9) 起 UI（再开一个终端）
+# 10) 起 UI（再开一个终端）
 uv run streamlit run src/ops_assistant/ui/streamlit_app.py
+
+# 11)（可选）教程实验脚本——从教程正文提取，存放于 教程/实验/
+uv run python ../教程/实验/06_state_graph.py
 ```
 
 每一步的**通过标准**：
@@ -64,56 +131,55 @@ uv run streamlit run src/ops_assistant/ui/streamlit_app.py
 | --- | --- | --- |
 | `uv sync` | 退出码 0，`.venv` 出现 | 网络/镜像问题：设置 `UV_INDEX_URL`；Python 版本过低：`uv python install 3.12` |
 | `compileall` | 退出码 0，无 SyntaxError | 按报错文件行号修；注意中文路径不影响，但文件编码必须是 UTF-8 |
-| `bootstrap.py` | 打印数据库、索引、标准答案三处路径与行数摘要 | `知识目录为空`：检查 `data/knowledge/*.md` 是否存在；`ModuleNotFoundError: ops_assistant`：确认在 `ops-assistant` 目录且已 `uv sync` |
-| `pytest` | 无 failed/error（数量以实际为准） | 见第 3 节"测试失败排查顺序" |
-| `run_eval.py` | 生成 `eval/results/deterministic-*.json`，`exception_count=0` | 先看 `cases[i].errors` 与 `trace_nodes` |
+| `bootstrap.py` | 打印数据库、索引、标准答案三处路径与行数摘要 | `知识目录为空`：检查 `data/knowledge/*.md`；`ModuleNotFoundError: ops_assistant`：确认在 `ops-assistant` 目录且已 `uv sync` |
+| `pytest` | 0 failed / 0 error（2026-10-19 基线：176 passed） | 见第 5 节排查顺序 |
+| `ruff check .` | All checks passed | 行宽按显示宽度计（中文占 2 列），阈值 120 |
+| `run_eval.py` | 14/14 匹配、exception_count=0 | 先看 `cases[i].errors` 与 `trace_nodes` |
 | `run_cli.py` | 打印 `awaiting_approval` 与报告 | `THREAD_NOT_FOUND`：先 `--list-threads` 拿 thread_id |
 | uvicorn / streamlit | `/docs` 200；页面能选会话并提问 | 端口占用换端口；UI 报连接失败检查 API 是否已启动 |
 
-## 3. 测试失败时的排查顺序
+## 5. 测试失败时的排查顺序
 
 1. **先跑 `uv run python -m compileall`**：语法错会伪装成 import 失败。
 2. **单个文件先跑**：`uv run pytest tests/test_queries.py -q`。
 3. **看是"环境问题"还是"口径问题"**：
-   - `ModuleNotFoundError` / `sqlite3.OperationalError: no such table` → 环境/初始化问题，回第 2 节第 4 步；
+   - `ModuleNotFoundError` / `sqlite3.OperationalError: no such table` → 环境/初始化问题，回第 4 节第 4 步；
    - `AssertionError` 且发生在 `test_ground_truth.py` → 说明生产实现与独立标准答案不一致，这是**最有价值**的失败，先别改测试。
 4. **口径相关的三个高频坑**：
    - 退款归属：只统计 `status='approved'`，且按 `refunds.refund_date` 归月，不是按订单日期；
    - 零基数：上期为 0 时 `pct_change` 必须是 `None`，不是 `0` 或 `inf`；
-   - 空月：`2025-01` 是"无记录"，`has_orders=False`，不能当"销售额为 0"。
+   - 空月：`2025-01` 是"无记录"，`has_orders=False`，不能当"销售额为 0"；另注意"无订单月"可能仍有跨月退款（净额为负），这是口径设计的自然结果。
 5. **工作流类失败**：先看 `TurnResult.trace` 停在哪；`budget_exceeded` 检查 `OPS_MAX_STEPS`；`failed` 看 `errors` 前缀（`INVALID_MONTH` / `GRAPH_ERROR` / `REVIEW_ERROR`）。
 6. **HITL 类失败**：确认用的是 `SqliteSaver`（重启恢复用例）还是 `InMemorySaver`（内存用例）；`test_hitl.py` 专门对比这两者，不要混用。
+7. **偏好类失败**：`TypeError: unhashable type: 'dict'` 说明偏好读回来的值没解包——检查 `PreferenceStore.all_for_user` 是否走了 `_unwrap_preference_value`。
 
-## 4. 关于 `uv.lock`
+## 6. 关于 `uv.lock` 与模型验证
 
-- 本次**没有**生成 `uv.lock`，因为生成它必须执行 `uv lock`，而本环境无法启动进程。
-- 仓库里的版本策略是：`pyproject.toml` 固定四个 LangChain/LangGraph 相关包的精确版本，其余给范围；
-  学习者首次 `uv sync` 时会解析出具体版本并写 `uv.lock`。
-- `uv.lock` 生成后**应当提交入库**（`.gitignore` 已不再忽略它），这样别人拿到仓库能复现同一套依赖。
-- 面试时如果被问"你的依赖可复现吗"，正确回答是："精确版本已钉死，锁文件由首次安装生成并入库；本次交付环境不能执行 uv，所以我不会假装锁文件已经存在。"
+- `uv.lock` **已于 2026-10-19 实测生成**（`uv sync` 产出）；建议提交入库，保证他人复现同一套依赖。
+- 四个 LangChain/LangGraph 相关包钉精确版本（`langgraph==1.2.16` 等），经与 2026-10-19 PyPI 元数据核对均为当日最新版。
+- **模型行为仍未评估**：本环境无 API Key。要声称"支持真实模型"，必须附 `scripts/check_model.py` 的实际 JSON 输出，并说明模型名与端点；`eval` 结果里的 `model_behavior_evaluated: false` 不要删——它证明你没有把确定性结果冒充模型效果。
 
-## 5. 本次交付实际做过的静态核对（可复核）
+## 7. 本次审查做过的静态核对（可复核）
 
-这些是"读代码/读文档"就能复核的，不依赖运行：
-
-- `config.Settings` 的 23 个字段与 `工程规格.md` 5.1 一致；`load_settings` 不覆盖已存在的环境变量；
+- `config.Settings` 字段与 `工程规格.md` 5.1 一致；`load_settings` 不覆盖已存在的环境变量；
 - `data/queries.py` 的 `MonthSales`（9 字段）/`RegionSales`（6 字段）与规格 3.4 一致；
-  月份校验正则 `^(?P<year>\d{4})-(?P<month>0[1-9]|1[0-2])$` 拒绝 `2026-13`、`2026-9`；
+  月份校验正则拒绝 `2026-13`、`2026-9`；
 - `domain/metrics.py` 的 `ComparisonResult` / `RegionDelta` 字段与规格 5.3 一致；
   `compare_months` 在 `dimension="channel"` 时返回 `unsupported_dimension` 而不抛异常；
 - `workflow/graph.py` 注册 10 个节点、3 处 `add_conditional_edges`、`export/clarify/fail → END`；
 - `workflow/persistence.py`：`SqliteSaver(sqlite3.connect(..., check_same_thread=False))` + `setup()`；
-  `resume_turn` 对非法 decision 抛 `ValueError`；重复审批返回同一 `export_path`；
-- 中断载荷 `{"type": "report_approval", "options": [...], "report_markdown": ...}` 为 JSON 可序列化；
-- 导出文件名为 `report-<thread_id>.md`，写入方式是临时文件 + `os.replace`。
+  `resume_turn` 对非法 decision 抛 `ValueError`；重复审批返回同一 `export_path`（实测确认）；
+- 中断载荷 `{"type": "report_approval", "options": [...], "report_markdown": ...}` 为 JSON 可序列化（实测经 SQLite 检查点往返）；
+- 导出文件名为 `report-<thread_id>.md`，写入方式是临时文件 + `os.replace`（幂等实测确认）；
+- 教程各单元引用的源码片段与 `src/ops_assistant/**` 当前实现逐块比对（差异仅为标注过的教学压缩）。
 
-## 6. 交付前必须补的证据（如果你要拿它去面试）
+## 8. 交付前必须补的证据（如果你要拿它去面试）
 
-1. 在**自己的机器**上按第 2 节完整跑一遍，保存终端输出（截图或日志文件）；
+1. 在**自己的机器**上按第 4 节完整跑一遍，保存终端输出（截图或日志文件）；
 2. 把 `pytest` 的失败项如实贴出来（如果有），并说明是环境问题还是代码问题；
 3. 把 `eval/results/deterministic-*.json` 的 `summary` 贴出来，同时保留
    `"model_behavior_evaluated": false` 这一行——它证明你没有把确定性结果冒充模型效果；
 4. 如果要声称"支持真实模型"，必须附 `scripts/check_model.py` 的实际 JSON 输出，并说明模型名与端点。
 
-**不要做的事**：不要把本文档当成"已验证"；不要在 README 里写"已通过全部测试"；
-不要引用仓库里不存在的测试报告。
+**不要做的事**：不要把本文档的沙箱实测结果冒充你自己机器的结果；不要在 README 里写
+"已通过全部测试"却不附执行环境；不要引用仓库里不存在的测试报告。

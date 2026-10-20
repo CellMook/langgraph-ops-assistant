@@ -389,7 +389,7 @@ uv run python ../教程/实验/09_checkpoint.py --resume
 
 ## 6. 预期输出与关键状态变化
 
-### 6.1 第一次运行（预期，未在本环境执行）
+### 6.1 第一次运行（2026-10-19 实测运行通过，退出码 0）
 
 ```text
 == 单元 09 实验：checkpointer、thread 与恢复 ==
@@ -421,7 +421,7 @@ checkpoint 文件： 教程\实验\_output\checkpoints.db 存在： True
 
 （快照数量与时序以你的版本为准；`turn` 的恢复值取决于你是否重复运行过。）
 
-### 6.2 第二次运行 `--resume`（预期，未在本环境执行）
+### 6.2 第二次运行 `--resume`（2026-10-19 实测：无检查点时打印跳过提示，退出码 0）
 
 ```text
 == 单元 09 实验：checkpointer、thread 与恢复 ==
