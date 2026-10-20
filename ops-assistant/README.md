@@ -168,6 +168,7 @@ uv run uvicorn ops_assistant.api.main:app --host 127.0.0.1 --port 8000
 | `GET` | `/api/chat/stream` | 同上，但以 **SSE** 逐节点推送进度（查询参数 `question` / `thread_id` / `user_id`） |
 | `POST` | `/api/threads/{id}/resume` | 提交审批：`{"decision": "approve"|"reject"|"edit", "comment": "", "edited_report": null}` |
 | `GET` | `/api/threads/{id}/report` | 读取已导出的 Markdown |
+| `GET` | `/api/threads/{id}/reports` | 列出该会话已导出的各版本（`report_id` + 路径） |
 | `GET` / `PUT` | `/api/preferences` | 读取/写入用户偏好（`amount_unit` ∈ 元/万元，`default_dimension` ∈ region/product/month） |
 | `GET` | `/api/health` | `status / model_enabled / kb_chunks / db_ok / max_steps / max_tool_calls / checkpointer / closed` |
 | `GET` | `/api/usage` | 进程级累计用量 + 最近一次指标快照 |
