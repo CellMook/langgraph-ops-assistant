@@ -173,6 +173,45 @@ sequenceDiagram
 4. 重复 `approve`：`resume_turn` 检测到无待处理中断且已导出，直接返回同一结果（幂等）；
 5. 换进程后仍可恢复的前提是 `SqliteSaver`（`InMemorySaver` 重启即丢）。
 
+### 4.1 流式路径（同一个图，另一种送达方式）
+
+`GET /api/chat/stream`（SSE）与 `POST /api/chat` 跑的是**同一张图、同一套审批语义**，区别只在"进度怎么送达"：
+
+```mermaid
+sequenceDiagram
+    participant U as 客户端
+    participant API as api/main.py
+    participant W as 工作线程(asyncio.to_thread)
+    participant RT as AppRuntime
+    participant G as 图
+
+    U->>API: GET /api/chat/stream?question=...
+    API->>RT: pending_approval(thread_id, user_id)
+    Note over API,RT: 开流前拦截：待审批→409、越权→404、校验→422<br/>（SSE 发出 200 后就改不了状态码）
+    API-->>U: 200 text/event-stream
+    API->>W: pump()
+    W->>RT: stream_turn(...)（持有运行时锁）
+    RT->>G: graph.stream(state, config, context, stream_mode="updates")
+    loop 每个超级步
+        G-->>RT: {"<节点名>": 状态增量}
+        RT-->>W: {"event":"node", ...}
+        W-->>API: asyncio.Queue（call_soon_threadsafe）
+        API-->>U: event: node / data: {...}
+    end
+    G-->>RT: {"__interrupt__": (Interrupt,)}
+    RT-->>W: {"event":"interrupt", id, payload}
+    API-->>U: event: interrupt
+    RT-->>W: {"event":"final", turn}
+    API-->>U: event: final（终止帧，turn 与 POST /api/chat 同构）
+```
+
+两个必须知道的约束：
+
+1. **`RLock` 按线程归属**：`stream_turn` 在整个流期间持锁（与 `invoke_turn` 同样的串行化保证）。Starlette 消费同步生成器时会在线程池里逐个 `next()`，相邻两次可能落在不同线程，直接交给 `StreamingResponse` 会在释放锁时抛 `RuntimeError`。所以这里用单独一个工作线程迭代生成器，锁的获取与释放都在同一线程；
+2. **客户端断开不中止工作流**：本轮会跑完并写入检查点，避免留下半截状态，只是后续帧不再发送。
+
+审批仍走 `POST /api/threads/{id}/resume`：流式只送到 `interrupt` 为止，报告不会因为"流完了"就落盘。
+
 ## 5. 数据与知识两条链路
 
 ```mermaid

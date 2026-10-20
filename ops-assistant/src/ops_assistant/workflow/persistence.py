@@ -644,6 +644,118 @@ class AppRuntime:
         )
         return self._turn_result(thread_id, values or {}, user_id=user_id, request_id=request_id, started=started)
 
+    def stream_turn(
+        self,
+        question: str,
+        *,
+        thread_id: str | None = None,
+        user_id: str = DEFAULT_USER_ID,
+        request_id: str | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """以节点为粒度流式推进一轮问答（终态语义与 :meth:`invoke_turn` 完全一致）。
+
+        事件序列（每个都是 JSON 友好的 dict，含 ``event`` 字段）::
+
+            start      {"event": "start", "thread_id", "request_id", "question"}
+            node       {"event": "node", "node": <节点名>, "update": <该节点写入的状态增量>}
+            interrupt  {"event": "interrupt", "id", "payload"}  # 与 TurnResult.interrupt 同构
+            final      {"event": "final", "turn": <TurnResult>}  # 与 invoke_turn 返回值同构
+            error      {"event": "error", "code", "message", "request_id"}
+
+        ``final`` 与 ``error`` 互斥且一定是最后一个事件：消费端只认这两个之一作为终止
+        信号，``node`` / ``interrupt`` 属于过程信息，丢掉也不影响终态正确性。
+
+        参数与异常同 :meth:`invoke_turn`：会话上有待审批中断时抛 ``ValueError``
+        （``PENDING_APPROVAL``），运行时已关闭时抛 ``RuntimeError``。图执行失败不抛，
+        而是以 ``final`` 事件返回 ``status="failed"`` 的 TurnResult，与非流式路径一致。
+
+        线程约束（重要）：
+            ``start`` 之后生成器持有 ``self.lock`` 直到流结束，与 ``invoke_turn`` 的
+            串行化保证一致（同一时刻只推进一张图，共享 SQLite 连接不被并发写）。
+            ``threading.RLock`` **按线程归属**，因此必须在同一个线程里迭代到结束或显式
+            ``close()``；跨线程逐个 ``next()`` 会在释放锁时抛 RuntimeError。API 层为此
+            用单独的工作线程消费本生成器（见 ``api/main.py`` 的 ``/api/chat/stream``），
+            CLI 与测试直接 ``for`` 循环即可。
+
+        流式不改变任何业务语义：审批仍必须走 ``resume_turn``，报告仍只在批准后落盘。
+        """
+        self._ensure_open()
+        thread_id = str(thread_id or new_request_id())
+        request_id = request_id or new_request_id()
+        user_id = str(user_id or DEFAULT_USER_ID)
+        started = time.perf_counter()
+        yield {
+            "event": "start",
+            "thread_id": thread_id,
+            "request_id": request_id,
+            "question": str(question or ""),
+        }
+        with self.lock:
+            existing = self._get_snapshot(thread_id, user_id)
+            if _extract_interrupt(existing) is not None:
+                raise ValueError("PENDING_APPROVAL: 请先批准、编辑或拒绝当前报告，再开始新一轮。")
+            state = initial_state(question, thread_id, user_id, self.settings)
+            config = self._config(thread_id, user_id, request_id)
+            context = self._context(user_id)
+            try:
+                for chunk in self.graph.stream(state, config=config, context=context, stream_mode="updates"):
+                    if not isinstance(chunk, dict):
+                        continue
+                    if "__interrupt__" in chunk:
+                        pending = _normalize_interrupt(chunk.get("__interrupt__"))
+                        if pending is not None:
+                            yield {"event": "interrupt", **pending}
+                        continue
+                    for node, update in chunk.items():
+                        yield {"event": "node", "node": str(node), "update": jsonable(update)}
+            except Exception as exc:
+                self.metrics.record_error(
+                    code="GRAPH_STREAM_ERROR",
+                    message=f"{type(exc).__name__}: {exc}",
+                    thread_id=thread_id,
+                    node="runtime",
+                    request_id=request_id,
+                )
+                log_structured(
+                    event="turn.failed",
+                    request_id=request_id,
+                    thread_id=thread_id,
+                    ok=False,
+                    error_code=type(exc).__name__,
+                    duration_ms=elapsed_ms_since(started),
+                )
+                yield {
+                    "event": "final",
+                    "turn": self._failed_result(
+                        thread_id,
+                        request_id,
+                        started,
+                        f"GRAPH_ERROR: 工作流执行失败（{type(exc).__name__}: {exc}）。",
+                    ),
+                }
+                return
+            snapshot = self._get_snapshot(thread_id, user_id)
+            values = dict(getattr(snapshot, "values", None) or {})
+            log_structured(
+                event="turn.finished",
+                request_id=request_id,
+                thread_id=thread_id,
+                ok=True,
+                duration_ms=elapsed_ms_since(started),
+                detail={"status": str(values.get("status") or ""), "streamed": True},
+            )
+            yield {
+                "event": "final",
+                "turn": self._turn_result(
+                    thread_id,
+                    values,
+                    user_id=user_id,
+                    request_id=request_id,
+                    started=started,
+                    snapshot=snapshot,
+                ),
+            }
+
     @_locked_turn
     def resume_turn(
         self,
@@ -753,6 +865,27 @@ class AppRuntime:
             detail={"decision": decision},
         )
         return self._turn_result(thread_id, values or {}, user_id=user_id, request_id=request_id, started=started)
+
+    def pending_approval(self, thread_id: str | None, *, user_id: str = DEFAULT_USER_ID) -> dict[str, Any] | None:
+        """返回该会话待审批的中断载荷；没有历史或没有待审批时返回 None。
+
+        这是 :meth:`stream_turn` 的**前置检查**，供传输层在开始流之前给出标准
+        HTTP 409：SSE 一旦发出 200 与响应头就无法再改状态码，所以拦截必须发生在
+        开流之前。会话存在但不属于该用户时抛 :class:`ThreadNotFoundError`，
+        与 :meth:`invoke_turn` 的归属校验一致。
+
+        注意：本方法与 ``stream_turn`` 之间存在检查与执行的时间窗，真正的权威拦截
+        仍是 ``stream_turn`` 内部的同一判断（它在锁内完成）；竞态下客户端会收到
+        ``error`` 事件而不是 409。
+        """
+        self._ensure_open()
+        thread_id = str(thread_id or "")
+        if not thread_id:
+            return None
+        snapshot = self._get_snapshot(thread_id, user_id)
+        if not dict(getattr(snapshot, "values", None) or {}):
+            return None
+        return _extract_interrupt(snapshot)
 
     def read_thread(
         self,
@@ -1060,9 +1193,19 @@ def _extract_interrupt(snapshot: Any) -> dict[str, Any] | None:
         for task in getattr(snapshot, "tasks", ()) or ():
             for item in getattr(task, "interrupts", ()) or ():
                 candidates.append(item)
+    return _normalize_interrupt(candidates)
+
+
+def _normalize_interrupt(candidates: Any) -> dict[str, Any] | None:
+    """把 ``Interrupt`` 对象（或 dict 形态）归一成 ``{"id", "payload"}``。
+
+    快照的 ``snapshot.interrupts`` 与 ``stream_mode="updates"`` 里的
+    ``__interrupt__`` 是同一类对象，统一走这里，SSE 事件与 TurnResult.interrupt
+    才能保持同构。
+    """
     if not candidates:
         return None
-    first = candidates[0]
+    first = list(candidates)[0]
     if isinstance(first, dict):
         value = first.get("value")
         interrupt_id = first.get("id")

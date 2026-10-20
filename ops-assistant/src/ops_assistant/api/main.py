@@ -16,6 +16,8 @@
     线程安全由 ``AppRuntime.lock`` 串行化，DB 连接以 ``check_same_thread=False`` 打开。
 """
 
+import asyncio
+import json
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -23,9 +25,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from ops_assistant.api.schemas import (
     ChatRequest,
@@ -92,6 +94,20 @@ def _error(
             }
         },
     )
+
+
+def _sse(event: dict[str, Any], request_id: str = "") -> str:
+    """把一个事件字典格式化成 SSE 帧：``event: <name>\\ndata: <json>\\n\\n``。
+
+    ``json.dumps`` 会把字符串内的换行转义成 ``\\n``，所以 data 一定是单行，
+    不需要按 SSE 规范把它拆成多个 ``data:`` 行。``ensure_ascii=False`` 让中文
+    原样传输（帧以 UTF-8 编码）。
+    """
+    body = dict(event)
+    if request_id and not body.get("request_id"):
+        body["request_id"] = request_id
+    name = str(body.get("event") or "message")
+    return f"event: {name}\ndata: {json.dumps(jsonable(body), ensure_ascii=False)}\n\n"
 
 
 def get_runtime(request: Request) -> AppRuntime:
@@ -300,6 +316,115 @@ def chat(payload: ChatRequest, request: Request) -> TurnResponse:
         detail={"status": turn.get("status")},
     )
     return TurnResponse(**turn)
+
+
+@app.get(
+    "/api/chat/stream",
+    tags=["chat"],
+    summary="流式发起一轮问答（SSE）",
+)
+async def chat_stream(
+    request: Request,
+    question: str = Query(min_length=1, max_length=2000, description="自然语言问题"),
+    thread_id: str | None = Query(default=None, max_length=128, description="留空则新建会话"),
+    user_id: str = Query(default=DEFAULT_USER_ID, min_length=1, max_length=64, description="用户标识"),
+) -> StreamingResponse:
+    """以 SSE 逐节点推送一轮问答；终止事件是 ``final`` 或 ``error``，二者互斥。
+
+    事件契约与 :meth:`AppRuntime.stream_turn` 一致::
+
+        event: start      data: {"event","thread_id","request_id","question"}
+        event: node       data: {"event","node","update"}
+        event: interrupt  data: {"event","id","payload"}
+        event: final      data: {"event","turn"}   # turn 与 POST /api/chat 响应体同构
+        event: error      data: {"event","code","message","request_id"}
+
+    ``final.turn`` 与 ``POST /api/chat`` 的 ``TurnResponse`` 同构，既有客户端逻辑可直接
+    复用；``node`` / ``interrupt`` 只是过程信息，丢弃不影响终态正确性。
+
+    为什么是 GET + 查询参数：浏览器原生 ``EventSource`` 只支持 GET、不能带请求体。
+    非浏览器客户端用任意 HTTP 库读 ``text/event-stream`` 即可。
+
+    **审批语义没有被流式改变**：收到 ``interrupt`` 之后仍必须调用
+    ``POST /api/threads/{thread_id}/resume`` 才会导出报告；流式只改变"进度怎么送达"，
+    不改变"谁能落盘"。
+
+    并发与线程说明：``stream_turn`` 在整个流期间持有运行时锁，而 ``threading.RLock``
+    按线程归属，所以这里用**单独一个工作线程**（``asyncio.to_thread``）迭代生成器，再经
+    ``asyncio.Queue`` 把帧交回事件循环。不能把同步生成器直接交给 ``StreamingResponse``：
+    Starlette 会在线程池里逐个 ``next()``，相邻两次可能落在不同线程，释放锁时抛
+    ``RuntimeError: cannot release un-acquired lock``。
+
+    客户端断开**不会**中止工作流：本轮会跑完并写入检查点（避免留下半截状态），
+    只是后续帧不再发送。
+    """
+    runtime = get_runtime(request)
+    request_id = _request_id(request)
+    # 开流之前拦截：SSE 一旦发出 200 与响应头就无法再改状态码，
+    # 所以待审批必须在这里变成标准 409（与 POST /api/chat 一致）。
+    try:
+        pending = runtime.pending_approval(thread_id, user_id=user_id)
+    except ThreadNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "THREAD_NOT_FOUND", "message": str(exc)},
+        ) from exc
+    if pending is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "PENDING_APPROVAL", "message": "请先批准、编辑或拒绝当前报告，再开始新一轮。"},
+        )
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[Any] = asyncio.Queue()
+    sentinel = object()
+
+    def pump() -> None:
+        """在单一线程里迭代生成器：锁的获取与释放都发生在这个线程。"""
+        try:
+            for event in runtime.stream_turn(
+                question, thread_id=thread_id, user_id=user_id, request_id=request_id
+            ):
+                loop.call_soon_threadsafe(queue.put_nowait, _sse(event, request_id))
+        except ThreadNotFoundError as exc:
+            loop.call_soon_threadsafe(
+                queue.put_nowait, _sse({"event": "error", "code": "THREAD_NOT_FOUND", "message": str(exc)}, request_id)
+            )
+        except ValueError as exc:
+            # 预检与开流之间的竞态：权威拦截在 stream_turn 内部（锁内完成）。
+            loop.call_soon_threadsafe(
+                queue.put_nowait, _sse({"event": "error", "code": "PENDING_APPROVAL", "message": str(exc)}, request_id)
+            )
+        except Exception as exc:
+            logger.warning("SSE 流式问答失败：%s: %s", type(exc).__name__, exc)
+            loop.call_soon_threadsafe(
+                queue.put_nowait, _sse({"event": "error", "code": type(exc).__name__, "message": str(exc)}, request_id)
+            )
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, sentinel)
+
+    async def body() -> AsyncIterator[str]:
+        worker = asyncio.ensure_future(asyncio.to_thread(pump))
+        try:
+            while True:
+                item = await queue.get()
+                if item is sentinel:
+                    break
+                yield item
+        finally:
+            # 等工作线程收尾，保证锁已释放；即使这里被取消，pump 线程仍会自行跑完并放锁。
+            await worker
+
+    log_structured(event="api.chat_stream", request_id=request_id, thread_id=thread_id, ok=True)
+    return StreamingResponse(
+        body(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            # 反向代理默认会缓冲响应，SSE 必须关掉才能逐帧送达
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post(
