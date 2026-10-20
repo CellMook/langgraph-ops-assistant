@@ -4,7 +4,9 @@
 > 所以 `git init` / `git add` / `git push` **我一次都没有执行过**，下面所有命令都需要**你在自己的机器上**运行。
 > 我完成的是：排除规则（`.gitignore` / `.gitattributes`）、README 与交付清单的同步、以及这份可自检的步骤。
 
-## 0. 快速方式（推荐）：一键脚本
+## 0. 快速方式（推荐）
+
+### 0.1 有 `gh`（GitHub CLI）且已登录
 
 仓库根目录有 [publish.ps1](../publish.ps1)，它把下面第 3–6 步串起来，并在提交前做安全检查（发现 `.env`、`*.db`、`Academy课程/`、个人笔记就中止）。
 
@@ -21,10 +23,27 @@ pwsh -ExecutionPolicy Bypass -File .\publish.ps1 -RepoName langgraph-ops-assista
 pwsh -ExecutionPolicy Bypass -File .\publish.ps1 -RepoName langgraph-ops-assistant -Private
 ```
 
-前提：`gh auth login` 已完成（脚本会先检查，未登录会直接报错并提示）。
-脚本会自动：`git init` → 用你的 GitHub 匿名邮箱配置提交身份 → 暂存并安全检查 → commit → `gh repo create --push` → 打印仓库地址。
+### 0.2 没有 `gh`（或提示「'gh' 不是内部或外部命令」）
 
-> 该脚本**没有在整理环境中运行验证过**（环境无法启动进程），所以请务必先 `-DryRun`；
+`gh` 未安装、或装完没重开终端时，走**模式 B**：先在网页建空仓库，再把地址传给脚本。
+
+```powershell
+cd "D:\MySpace\LangChain学习路线"
+
+# 1) 浏览器打开 https://github.com/new 建一个空仓库（不要勾 README / gitignore / license）
+# 2) 把下面的地址换成你自己的，先干跑
+pwsh -ExecutionPolicy Bypass -File .\publish.ps1 -RemoteUrl https://github.com/<你的用户名>/<仓库名>.git -DryRun
+
+# 3) 正式执行
+pwsh -ExecutionPolicy Bypass -File .\publish.ps1 -RemoteUrl https://github.com/<你的用户名>/<仓库名>.git
+```
+
+模式 B 不需要 `gh`，首次 push 会弹出 Git Credential Manager 让你登录 GitHub（或用 PAT 作为密码）。
+如果确实想装 `gh`：`winget install --id GitHub.cli -e --source winget`，然后**关闭并重开终端**，再 `gh auth login`。
+
+没有 PowerShell 7（`pwsh`）时，把命令里的 `pwsh` 换成 `powershell`；脚本已保存为 UTF-8 with BOM，Windows PowerShell 5.1 可直接解析。
+
+> 脚本已在 Windows PowerShell 5.1 上用 `-DryRun` 验证通过（2026-10-20）；正式发布前仍建议先干跑确认计划。
 > 如果脚本报错，直接走下面的手动步骤，两者等价。
 
 ## 1. 这次"整理"改了什么
@@ -171,6 +190,7 @@ Test-Path .\uv.lock                                                # 预期 Fals
 
 | 现象 | 原因 | 解决 |
 | --- | --- | --- |
+| `'gh' 不是内部或外部命令` | gh 未安装，或安装后没重开终端 | 新开终端再 `where gh`；没有就用第 0.2 节模式 B（不需要 gh），或 `winget install --id GitHub.cli -e --source winget` 后重开终端 |
 | `fatal: not a git repository` | 没在仓库根目录执行 | `cd "D:\MySpace\LangChain学习路线"` |
 | `remote origin already exists` | 之前加过 | `git remote set-url origin <新地址>` |
 | `Authentication failed` | 用账号密码走 HTTPS | 改用 PAT 或 SSH（见第 5 步） |
