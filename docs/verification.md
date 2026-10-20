@@ -1,11 +1,44 @@
-# 验证记录（verification）
+# 验证记录
 
-> **先读结论（2026-10-19 更新）**：初稿交付时代码**没有在任何真实 Python 环境中执行过**
-> （编写环境 `pwsh` 返回 `0xC0000142`，无法启动进程）。
-> **2026-10-19 的审查在 Linux 沙箱中完成了完整实测**：依赖解析安装、语法编译、
-> 176 项测试、静态检查、确定性评估、19 个教程实验脚本、bootstrap / CLI / FastAPI / Streamlit
-> 全部实际运行，结果记录在本文第 1–2 节。审查中发现并修复了 8 类真实缺陷（第 3 节）。
-> **学习纪律不变**：你必须在自己的机器上复跑第 4 节的命令，才算完成你自己的验证。
+## 当前复测：2026-10-20
+
+Linux x86_64，Python 3.12.14、uv 0.12.23；使用仓库 `uv.lock`：LangChain 1.4.6、LangGraph 1.2.16、langchain-openai 1.7.2。以下结果来自本轮真实执行；后面的 2026-10-19 章节保留为历史记录，其计数与接口不代表当前版本。
+
+| 验证项 | 本轮结果 |
+| --- | --- |
+| `uv sync --locked` | 成功 |
+| `uv run pytest -q` | 220 passed，含 44 项审查回归断言 |
+| `uv run ruff check .` / compileall | 通过 |
+| `uv run python eval/run_eval.py --verbose` | 20/20，异常、轨迹和数值断言失配均为 0；失败退出非零 |
+| `uv run python scripts/verify_ui.py` | 真实本地 API + Streamlit AppTest：审批、下载按钮、新建会话、当前编辑器、历史会话目标通过 |
+| `uv run python scripts/verify_recovery.py` | 三个独立 Python 进程：待审批恢复、导出、重复审批同内容同路径通过 |
+| `教程/实验/*.py` | 23 个脚本全部退出码 0；无 key 探测分支明确跳过 |
+| 真实模型 / embedding、Windows、GitHub CI | 本轮本地未验证；CI 新增矩阵不等于已在远端通过 |
+
+UI 验证是实际 Streamlit Python 交互与本地 HTTP 验证，未做浏览器像素或跨浏览器兼容测试。20 条评估为确定性验收，`model_behavior_evaluated=false`，不能据此宣称模型准确率。
+
+从 `ops-assistant/` 执行：
+
+```bash
+uv sync --locked
+uv run python scripts/bootstrap.py
+uv run python -m compileall -q src scripts tests eval ../教程/实验
+uv run pytest -q
+uv run ruff check .
+uv run python eval/run_eval.py --verbose
+uv run python scripts/verify_recovery.py
+uv run python scripts/verify_ui.py
+uv run python ../教程/实验/23_framework_contracts.py
+uv run python ../教程/实验/23_agent_budget.py
+```
+
+复测输出可从 `data/verification/` 查看 UI 与跨进程 JSON。评估会复制演示数据库到临时目录，隔离检查点、偏好、索引、导出并强制关闭外部模型。CI 覆盖 Linux/Windows × Python 3.11/3.12；首次远端运行结果以 Actions 页面为准。
+
+回归问题与验收映射见 [本轮修复记录](audit-fixes-2026-10-20.md)。自己的机器仍须复跑，不能把本环境结果当成本人机器结果。
+
+---
+
+# 历史记录：2026-10-19（旧版本）
 
 ## 1. 实测环境与总体结果（2026-10-19）
 
@@ -29,7 +62,7 @@
 | `uv run ruff check .` | ✅ All checks passed（初测 156 项告警，修复后清零） |
 | `uv run python eval/run_eval.py` | ✅ 14 条用例、状态匹配 14、异常 0 |
 | `uv run python scripts/bootstrap.py` | ✅ 建库（orders=956 / refunds=94）、索引（23 块）、标准答案（585 行 JSON） |
-| CLI 主问题 → `awaiting_approval` → `--resume approve` | ✅ 导出 `data/exports/report-<thread_id>.md`；重复 approve 返回同一路径（幂等） |
+| CLI 主问题 → `awaiting_approval` → `--resume approve` | ✅ 导出 `data/exports/report-<thread_id>-<report_id>.md`；重复 approve 返回同一路径（幂等） |
 | FastAPI（uvicorn 单 worker） | ✅ `/api/health` 200；`/api/chat` 返回 awaiting_approval；`resume` approve 导出；追问沿用 thread；`PUT /api/preferences` 写入后 `GET` 读回一致 |
 | Streamlit（headless） | ✅ 页面 200、`/_stcore/health` = ok、经 API 完成一轮问答 |
 | 教程 00–18 单元的 19 个实验脚本（从正文提取） | ✅ 全部退出码 0（清单见第 2 节） |
@@ -170,7 +203,7 @@ uv run python ../教程/实验/06_state_graph.py
 - `workflow/persistence.py`：`SqliteSaver(sqlite3.connect(..., check_same_thread=False))` + `setup()`；
   `resume_turn` 对非法 decision 抛 `ValueError`；重复审批返回同一 `export_path`（实测确认）；
 - 中断载荷 `{"type": "report_approval", "options": [...], "report_markdown": ...}` 为 JSON 可序列化（实测经 SQLite 检查点往返）；
-- 导出文件名为 `report-<thread_id>.md`，写入方式是临时文件 + `os.replace`（幂等实测确认）；
+- 导出文件名为 `report-<thread_id>-<report_id>.md`，写入方式是临时文件 + `os.replace`（幂等实测确认）；
 - 教程各单元引用的源码片段与 `src/ops_assistant/**` 当前实现逐块比对（差异仅为标注过的教学压缩）。
 
 ## 8. 交付前必须补的证据（如果你要拿它去面试）

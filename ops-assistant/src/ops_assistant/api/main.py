@@ -57,7 +57,7 @@ VERSION = "0.1.0"
 
 # 偏好允许的取值（与 workflow.state 的默认值保持一致）
 AMOUNT_UNITS = ("元", "万元")
-DIMENSIONS = ("region", "product", "month")
+DIMENSIONS = ("region",)
 
 
 def _now_iso() -> str:
@@ -281,12 +281,17 @@ def chat(payload: ChatRequest, request: Request) -> TurnResponse:
     ``clarification`` / ``failed`` / ``budget_exceeded``。传输层错误才用 HTTP 4xx/5xx。
     """
     runtime = get_runtime(request)
-    turn = runtime.invoke_turn(
-        payload.question,
-        thread_id=payload.thread_id,
-        user_id=payload.user_id,
-        request_id=_request_id(request),
-    )
+    try:
+        turn = runtime.invoke_turn(
+            payload.question,
+            thread_id=payload.thread_id,
+            user_id=payload.user_id,
+            request_id=_request_id(request),
+        )
+    except ThreadNotFoundError as exc:
+        raise HTTPException(404, detail={"code": "THREAD_NOT_FOUND", "message": str(exc)}) from exc
+    except ValueError as exc:
+        raise HTTPException(409, detail={"code": "PENDING_APPROVAL", "message": str(exc)}) from exc
     log_structured(
         event="api.chat",
         request_id=_request_id(request),
@@ -314,7 +319,10 @@ def resume_thread(thread_id: str, payload: ResumeRequest, request: Request) -> T
             detail={"code": "THREAD_NOT_FOUND", "message": str(exc)},
         ) from exc
     already_exported = current.get("status") == "approved" and bool(current.get("export_path"))
-    if current.get("interrupt") is None and not already_exported:
+    retry_export = current.get("status") == "failed" and any(
+        e.startswith("EXPORT_ERROR:") for e in current.get("errors", [])
+    )
+    if current.get("interrupt") is None and not already_exported and not retry_export:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
@@ -322,6 +330,8 @@ def resume_thread(thread_id: str, payload: ResumeRequest, request: Request) -> T
                 "message": "该会话没有待审批的报告：请先调用 /api/chat 生成报告草稿。",
             },
         )
+    if not payload.interrupt_id or not payload.report_id:
+        raise HTTPException(409, detail={"code": "STALE_APPROVAL", "message": "请提交当前 interrupt_id 与 report_id。"})
     try:
         turn = runtime.resume_turn(
             thread_id,
@@ -330,11 +340,17 @@ def resume_thread(thread_id: str, payload: ResumeRequest, request: Request) -> T
             edited_report=payload.edited_report or "",
             user_id=payload.user_id,
             request_id=_request_id(request),
+            interrupt_id=payload.interrupt_id,
+            report_id=payload.report_id,
+            content_hash=payload.content_hash,
         )
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": "INVALID_RESUME", "message": str(exc)},
+            status_code=409 if str(exc).startswith("STALE_APPROVAL:") else 422,
+            detail={
+                "code": "STALE_APPROVAL" if str(exc).startswith("STALE_APPROVAL:") else "INVALID_RESUME",
+                "message": str(exc),
+            },
         ) from exc
     log_structured(
         event="api.resume",
@@ -344,6 +360,16 @@ def resume_thread(thread_id: str, payload: ResumeRequest, request: Request) -> T
         detail={"decision": payload.decision, "status": turn.get("status")},
     )
     return TurnResponse(**turn)
+
+
+@app.get("/api/threads/{thread_id}/reports", tags=["chat"])
+def list_report_versions(thread_id: str, request: Request, user_id: str = DEFAULT_USER_ID) -> dict[str, Any]:
+    runtime = get_runtime(request)
+    try:
+        runtime.read_thread(thread_id, user_id=user_id)
+        return {"items": runtime.list_reports(thread_id, user_id)}
+    except ThreadNotFoundError as exc:
+        raise HTTPException(404, detail={"code": "THREAD_NOT_FOUND", "message": str(exc)}) from exc
 
 
 @app.get(
@@ -356,6 +382,7 @@ def get_report(
     thread_id: str,
     request: Request,
     user_id: str = DEFAULT_USER_ID,
+    report_id: str | None = None,
 ) -> ReportResponse:
     """读取已导出的 Markdown 报告内容（供 UI 预览与下载）。"""
     runtime = get_runtime(request)
@@ -366,7 +393,12 @@ def get_report(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "THREAD_NOT_FOUND", "message": str(exc)},
         ) from exc
-    export_path = str(turn.get("export_path") or "")
+    try:
+        export_path = (
+            runtime.report_path(thread_id, report_id, user_id) if report_id else str(turn.get("export_path") or "")
+        )
+    except ThreadNotFoundError as exc:
+        raise HTTPException(404, detail={"code": "REPORT_NOT_FOUND", "message": str(exc)}) from exc
     if not export_path:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -66,6 +66,11 @@ class QuestionSpec:
     wants_chart: bool
     needs_clarification: bool
     clarification: str | None
+    metric_explicit: bool = False
+    region_action: str = "inherit"
+    intent: str = "analysis"
+    input_error: str | None = None
+    time_error: str | None = None
 
 
 def _shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
@@ -116,18 +121,18 @@ def _match_regions(text: str, known_regions: list[dict] | None) -> tuple[tuple[s
         if (region_name and region_name in text) or region_id in text:
             if region_id not in found:
                 found.append(region_id)
-    if found:
-        return tuple(found), None
-
-    # 没有命中，但出现了“XX 地区/大区/区域”，给出可用地区列表。
+    # 即使已经命中一个地区，仍须校验其余明确提及的地区。
     if any(word in text for word in ("地区", "大区", "区域")):
         for match in _REGION_PHRASE_RE.finditer(text):
-            candidate = match.group("name")
-            if candidate in _REGION_STOPWORDS:
+            candidate = re.split(r"[和与、]", match.group("name"))[-1]
+            candidate = re.sub(r"^(?:那|按|看|只看|的)", "", candidate)
+            if not candidate or candidate in _REGION_STOPWORDS or candidate in {"各", "每", "所有", "全国"}:
+                continue
+            if any(str(item.get("region_name", "")) in candidate for item in ordered):
                 continue
             names = "、".join(str(item.get("region_name", "")) for item in known_regions)
-            return (), f"未找到地区「{candidate}」。当前可用地区：{names}。"
-    return (), None
+            return tuple(found), f"未找到地区「{candidate}」。当前可用地区：{names}。"
+    return tuple(found), None
 
 
 def _resolve_year_context(text: str, today: date) -> tuple[int | None, str | None]:
@@ -161,7 +166,10 @@ def _collect_mentions(
             invalid = True
             continue
         raw_year = match.group("year")
-        year = int(raw_year) if raw_year else (year_context or 0)
+        prefix = text[max(0, match.start() - 3) : match.start()]
+        year_anchor = int(_YEAR_RE.search(text).group("year")) if _YEAR_RE.search(text) else today.year
+        relative_year = year_anchor - 1 if prefix.endswith("去年") else today.year if prefix.endswith("今年") else None
+        year = int(raw_year) if raw_year else (relative_year or year_context or 0)
         mentions.append((match.start(), year, month))
 
     # “上个月/上月/本月/这个月”不在上面的正则里，单独按位置收集。
@@ -174,7 +182,9 @@ def _collect_mentions(
     for phrase, delta in relative_phrases:
         start = text.find(phrase)
         if start >= 0:
-            year, month = _shift_month(today.year, today.month, delta)
+            # “9 月比上月”以显式月份为锚点；单独“上月”才相对 today。
+            anchor = next((item for item in reversed(mentions) if item[0] < start and item[1]), None)
+            year, month = _shift_month(anchor[1] if anchor else today.year, anchor[2] if anchor else today.month, delta)
             mentions.append((start, year, month))
 
     mentions.sort(key=lambda item: item[0])
@@ -194,6 +204,8 @@ def _detect_dimension(text: str) -> str:
 
 
 def _detect_metric(text: str) -> str:
+    if any(word in text for word in ("利润", "成本", "客单价", "销量", "订单数", "转化率", "毛利")):
+        return "unsupported"
     if any(word in text for word in ("毛销售额", "GMV", "未扣退款", "退款前", "毛收入")):
         return "gross_sales"
     refund_only = any(word in text for word in ("退款金额", "退款额", "退款是多少", "退款多少"))
@@ -280,12 +292,14 @@ def parse_question(
             if first_year == 0 or second_year == 0:
                 needs_clarification = True
                 clarification = (
-                    f"请补充年份：你说的是哪一年的 {first_month} 月和 {second_month} 月？"
-                    f"当前数据范围：{data_range}。"
+                    f"请补充年份：你说的是哪一年的 {first_month} 月和 {second_month} 月？当前数据范围：{data_range}。"
                 )
             else:
-                current_month = _format_month(first_year, first_month)
-                previous_month = _format_month(second_year, second_month)
+                first = _format_month(first_year, first_month)
+                second = _format_month(second_year, second_month)
+                # 区间方向由语言关系决定，不由月份提及顺序决定。
+                forward = bool(re.search(r"到|至", stripped[first_pos:second_pos]))
+                current_month, previous_month = (second, first) if forward else (first, second)
                 wants_comparison = True
 
         elif len(mentions) == 1:
@@ -295,7 +309,10 @@ def parse_question(
                 clarification = f"请补充年份：你说的是哪一年的 {month} 月？当前数据范围：{data_range}。"
             else:
                 current_month = _format_month(year, month)
-                if any(word in stripped for word in ("环比", "比上月", "较上月", "和上月比", "与上月比")):
+                if "同比" in stripped or "去年同期" in stripped:
+                    previous_month = _format_month(year - 1, month)
+                    wants_comparison = True
+                elif any(word in stripped for word in ("环比", "比上月", "较上月", "和上月比", "与上月比")):
                     prev_year, prev_month = _shift_month(year, month, -1)
                     previous_month = _format_month(prev_year, prev_month)
                     wants_comparison = True
@@ -308,9 +325,13 @@ def parse_question(
                 needs_clarification = True
                 clarification = f"请提供要分析的时间范围，例如「2026 年 9 月」。当前数据范围：{data_range}。"
 
-    if not needs_clarification and region_clarification:
+    time_error = clarification
+    input_error = region_clarification
+    if metric == "unsupported":
+        input_error = "当前仅支持净销售额、毛销售额和退款额；该指标尚未实现，请换一个指标。"
+    if input_error:
         needs_clarification = True
-        clarification = region_clarification
+        clarification = input_error
 
     if not needs_clarification and (current_month or previous_month):
         for month in (current_month, previous_month):
@@ -332,6 +353,24 @@ def parse_question(
         previous_month = _format_month(prev_year, prev_month)
         wants_comparison = True
 
+    # 范围校验也属于时间错误，继承不得掩盖明确的非法期间。
+    if needs_clarification and not input_error:
+        time_error = clarification
+    is_definition = any(word in stripped for word in ("定义", "怎么算", "口径", "归属", "是否", "包含", "扣除", "计入"))
+    intent = "knowledge" if not mentions and is_definition else "mixed" if is_definition else "analysis"
+    explicit_metric = any(
+        word in stripped
+        for word in ("销售额", "退款额", "退款金额", "GMV", "毛收入", "利润", "成本", "销量", "订单数", "客单价")
+    )
+    region_action = (
+        "clear"
+        if any(word in stripped for word in ("全国", "全部地区", "所有地区", "所有区域"))
+        else "replace"
+        if regions
+        else "inherit"
+    )
+    if region_clarification:
+        region_action = "invalid"
     return QuestionSpec(
         raw=raw,
         current_month=current_month,
@@ -344,4 +383,9 @@ def parse_question(
         wants_chart=wants_chart,
         needs_clarification=needs_clarification,
         clarification=clarification,
+        metric_explicit=explicit_metric,
+        region_action=region_action,
+        intent=intent,
+        input_error=input_error,
+        time_error=time_error,
     )

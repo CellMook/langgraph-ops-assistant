@@ -107,9 +107,7 @@ def test_t17_index_roundtrip(tmp_path, settings) -> None:
         ("orders 表有哪些字段？", "04_数据字典"),
     ],
 )
-def test_t18_keyword_search_hits_expected_document(
-    kb: KnowledgeBase, question: str, expected_doc: str
-) -> None:
+def test_t18_keyword_search_hits_expected_document(kb: KnowledgeBase, question: str, expected_doc: str) -> None:
     """T18：贴近文档用词的问题，关键词基线能召回对应文档。"""
     hits = kb.keyword_search(question, k=4)
     assert hits, f"关键词检索无结果：{question}"
@@ -127,9 +125,7 @@ def test_t18_vector_search_is_deterministic(kb: KnowledgeBase) -> None:
     """T18：同一问题检索两次，结果 id 与顺序完全一致（可复现）。"""
     first = kb.search("退款归属月份", k=4, mode="vector")
     second = kb.search("退款归属月份", k=4, mode="vector")
-    assert [hit.chunk.chunk_id for hit in first] == [
-        hit.chunk.chunk_id for hit in second
-    ]
+    assert [hit.chunk.chunk_id for hit in first] == [hit.chunk.chunk_id for hit in second]
     assert [hit.score for hit in first] == [hit.score for hit in second]
 
 
@@ -250,7 +246,8 @@ def test_t19_fake_llm_with_valid_citation_is_accepted(kb: KnowledgeBase) -> None
     """T19：模型引用了本次命中里真实存在的块 -> 接受模型答案。"""
     probe = answer_from_knowledge("净销售额怎么计算？", kb, llm=None)
     valid_id = probe.citations[0]["chunk_id"]
-    fake = _FakeLLM(f"净销售额 = 毛销售额 - 已批准退款 [{valid_id}]。")
+    quote = next(line.strip() for line in probe.hits[0].chunk.text.splitlines() if line.strip())
+    fake = _FakeLLM(f"{quote} [{valid_id}]")
     answer = answer_from_knowledge("净销售额怎么计算？", kb, llm=fake)
     assert answer.mode == "llm"
     assert valid_id in answer.answer

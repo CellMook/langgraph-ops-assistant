@@ -1,14 +1,15 @@
-"""工作流图装配：10 个节点 + 3 处条件路由 + 检查点/Store 注入。
+"""工作流图装配：10 个节点 + 4 处条件路由 + 检查点/Store 注入。
 
 节点与路由一览（对应规格 5.6）：
 
     START → understand ─┬→ clarify → END
-                        ├→ knowledge → data
+                        ├→ knowledge ─┬→ END（纯知识问答）
+                        │             └→ data（混合问题）
                         └→ data ─┬→ compute → draft → review ─┬→ export → END
                                  ├→ repair → data              └→ END
                                  └→ fail → END
 
-    understand / data / review 三处走条件边，其余都是固定边；
+    understand / knowledge / data / review 四处走条件边，其余都是固定边；
     任何节点的失败最终都收敛到 fail 出口，不会把图留在中间状态。
 """
 
@@ -50,7 +51,7 @@ NODE_NAMES = (
     "fail",
 )
 
-# 三处条件路由的目标映射（review 的 "end" 映射到 END）
+# 主要条件路由的目标映射（review 的 "end" 映射到 END）
 UNDERSTAND_TARGETS = {"clarify": "clarify", "knowledge": "knowledge", "data": "data", "fail": "fail"}
 DATA_TARGETS = {"compute": "compute", "repair": "repair", "fail": "fail"}
 REVIEW_TARGETS = {"export": "export", "end": END}
@@ -90,7 +91,9 @@ def build_graph(
 
     builder.add_edge(START, "understand")
     builder.add_conditional_edges("understand", route_after_understand, UNDERSTAND_TARGETS)
-    builder.add_edge("knowledge", "data")
+    builder.add_conditional_edges(
+        "knowledge", lambda state: "end" if state.get("status") == "answered" else "data", {"end": END, "data": "data"}
+    )
     builder.add_conditional_edges("data", route_after_data, DATA_TARGETS)
     builder.add_edge("repair", "data")
     builder.add_edge("compute", "draft")

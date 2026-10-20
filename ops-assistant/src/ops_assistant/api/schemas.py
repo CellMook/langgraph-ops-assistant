@@ -76,7 +76,11 @@ class ChatRequest(BaseModel):
 class ResumeRequest(BaseModel):
     """人工审批结论。"""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
+
+    interrupt_id: str | None = Field(default=None, max_length=128)
+    report_id: str | None = Field(default=None, max_length=128)
+    content_hash: str | None = Field(default=None, max_length=64)
 
     decision: Literal["approve", "reject", "edit"] = Field(
         description="approve 导出 / reject 不导出 / edit 按修改稿导出"
@@ -131,6 +135,8 @@ class TurnResponse(BaseModel):
     """一轮问答/审批的结果（也是读取会话状态的返回）。"""
 
     thread_id: str
+    report_id: str = ""
+    approval_interrupt_id: str = ""
     status: str
     answer: str = ""
     report: str = ""

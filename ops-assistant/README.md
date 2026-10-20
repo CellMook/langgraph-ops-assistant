@@ -1,5 +1,11 @@
 # ops-assistant
 
+> **2026-10-20 运行契约**：纯知识问题直接返回 `answered`；仅地区维度已实现，商品/月/渠道请求会澄清。审批正文只读，可追加无数字备注。HTTP resume 必须回传当前 `report_id` 与 `interrupt.id`（字段名 `interrupt_id`），建议同时回传 `content_hash`；旧卡片返回 409，无效编辑返回 422。报告按版本保存，可从 `GET /api/threads/{id}/reports` 列表选择，再用 `/report?report_id=...` 读取历史产物。待审批期间须先完成或拒绝当前报告再追问。
+>
+> DeepSeek/DashScope/Ollama 使用 OpenAI 兼容协议时，设置 `OPS_BASE_URL` 为供应商兼容端点，并按供应商要求配置 key；带这些 provider 前缀的模型名会在显式 URL 存在时转为 `openai:<model>`。原生 provider 集成可能需要额外依赖，未做真实请求验证。对话与 embedding 请求均传递 `OPS_REQUEST_TIMEOUT_S`。
+>
+> 最终验收命令与边界说明见 [验证记录](../docs/verification.md) 和 [单元 23](../教程/23-契约与版本化验收.md)。
+
 经营数据分析与知识库智能助手：**SQLite 经营数据 + 本地知识库 + LangGraph 固定工作流 + 人工审批**。
 
 它回答的是这类问题：
@@ -21,7 +27,7 @@
 | API Key | **可选** | 留空即纯规则模式；模型只影响润色与知识库答案的措辞 |
 | 端口 | 8000（API）、8501（Streamlit 默认） | 只跑 CLI 时不需要端口 |
 
-依赖版本已在 `pyproject.toml` 中锁定：`langchain==1.4.6`、`langgraph==1.2.16`、`langchain-openai==1.7.2`、`langchain-text-splitters==1.1.3`、`langgraph-checkpoint-sqlite==3.1.2`，其余按范围安装。**没有 `uv.lock` 随仓库分发**，首次 `uv sync` 会按上述约束解析。
+依赖版本已在 `pyproject.toml` 中锁定：`langchain==1.4.6`、`langgraph==1.2.16`、`langchain-openai==1.7.2`、`langchain-text-splitters==1.1.3`、`langgraph-checkpoint-sqlite==3.1.2`，其余按范围安装。仓库已提交跨平台 `uv.lock`，使用 `uv sync --locked` 复现；升级依赖时显式运行 `uv lock --upgrade` 并重新验收。
 
 ---
 
@@ -29,7 +35,7 @@
 
 ```bash
 cd ops-assistant
-uv sync
+uv sync --locked
 ```
 
 `uv sync` 会以可编辑方式安装 `src/ops_assistant`；`pyproject.toml` 同时配置了 `[tool.pytest.ini_options] pythonpath = ["src"]`，所以即使不安装也能 `import ops_assistant`。
@@ -37,7 +43,7 @@ uv sync
 安装开发依赖（跑测试 / lint 才需要）：
 
 ```bash
-uv sync --group dev     # pytest>=8、ruff>=0.6
+uv sync --locked --group dev     # pytest>=8、ruff>=0.6
 ```
 
 ---
@@ -55,7 +61,7 @@ cp .env.example .env        # Windows PowerShell: copy .env.example .env
 | `OPS_MODEL` | 空 | 对话模型，形如 `openai:gpt-4.1-mini`、`deepseek:deepseek-chat`、`dashscope:qwen-plus` | 纯规则模式：不调用任何模型 |
 | `OPS_MODEL_PROVIDER` | 空 | `OPS_MODEL` 不带 `provider:` 前缀时使用 | 必须能推断 provider，否则不启用模型 |
 | `OPS_API_KEY` | 空 | 模型密钥，只留在本机 | 有 `OPS_MODEL` 但无 key → `llm_enabled=False`，日志 WARNING，**程序继续** |
-| `OPS_BASE_URL` | 空 | OpenAI 兼容端点（OpenAI / DeepSeek / DashScope / Ollama） | 用 provider 官方默认地址 |
+| `OPS_BASE_URL` | 空 | OpenAI 兼容端点（OpenAI / DeepSeek / DashScope / Ollama） | 使用 provider 默认地址；兼容端点须显式配置 URL，见下方说明 |
 | `OPS_EMBEDDING_MODEL` | 空 | 真实 embedding 模型 | 用确定性哈希向量 `HashingEmbeddings`（教学用，不是语义模型） |
 | `OPS_EMBEDDING_BASE_URL` / `OPS_EMBEDDING_API_KEY` | 空 | embedding 专用端点/密钥 | 复用 `OPS_BASE_URL` / `OPS_API_KEY` |
 | `OPS_EMBEDDING_DIM` | `512` | 哈希向量维度 | **改成别的值后必须重建知识索引** |
@@ -126,7 +132,7 @@ uv run python scripts/compute_ground_truth.py --db data/ops.db --out data/ground
 uv run python scripts/run_cli.py -q "2026 年九月销售额比八月变化多少？按地区分解差额，并说明销售额是否扣除了退款。"
 ```
 
-**实测（2026-10-19，Linux 沙箱 + Python 3.11 + uv 0.13.1）**：打印 `会话 / 状态：awaiting_approval / 答复 / 8 段报告 / 执行轨迹 / 来源 / 预算 / 审批摘要`；`--resume approve` 导出 `data/exports/report-<thread_id>.md`，重复 approve 返回同一路径（幂等）。
+**实测（2026-10-19，Linux 沙箱 + Python 3.11 + uv 0.13.1）**：打印 `会话 / 状态：awaiting_approval / 答复 / 8 段报告 / 执行轨迹 / 来源 / 预算 / 审批摘要`；`--resume approve` 导出 `data/exports/report-<thread_id>-<report_id>.md`，重复 approve 返回同一路径（幂等）。
 
 ```bash
 uv run python scripts/run_cli.py --thread-id <thread_id> --resume approve --comment "OK"
@@ -249,7 +255,7 @@ $env:OPS_MAX_STEPS="1"; uv run python scripts/run_cli.py -q "2026 年九月销�
 | `data/ground_truth.json` | `compute_ground_truth.py` | 独立标准答案 |
 | `data/checkpoints.db` | 运行时（`SqliteSaver`） | LangGraph 检查点，`thread` 状态来源 |
 | `data/preferences.db` | 运行时（`PreferenceStore`） | 用户偏好（元/万元、默认维度） |
-| `data/exports/report-<thread_id>.md` | `review` 通过后的 `export` 节点 | 报告落盘（临时文件 + fsync + `os.replace` 原子替换） |
+| `data/exports/report-<thread_id>-<report_id>.md` | `review` 通过后的 `export` 节点 | 报告落盘（临时文件 + fsync + `os.replace` 原子替换） |
 | `data/logs/ops-assistant.log` | 脚本 / API | 结构化日志 |
 
 ---

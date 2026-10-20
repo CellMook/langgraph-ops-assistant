@@ -164,18 +164,8 @@ Test-Path .\uv.lock                                                # 预期 Fals
 
 ## 7. 推送后再做两件事（提升可信度）
 
-1. **生成并提交 `uv.lock`**：
-   ```powershell
-   cd .\ops-assistant
-   uv lock          # 或 uv sync，会生成 uv.lock
-   cd ..
-   git add ops-assistant/uv.lock
-   git commit -m "chore: 提交 uv.lock（锁定可复现依赖）"
-   git push
-   ```
-   这一步能真正兑现 README 里"依赖可复现"的说法；目前它只是"版本钉死 + 待生成锁文件"。
-2. **按 `docs/verification.md` 跑一遍**，把真实输出补进你的仓库（哪怕只有 `pytest` 的通过条数）。
-   现在仓库里**没有任何实测证据**，这是它最大的短板；补上之后，README、`verification.md`、`交付清单.md` 三处要同步改。
+1. **复现已有锁文件**：在 `ops-assistant/` 执行 `uv sync --locked`。锁文件已提交，只有计划升级依赖时才重新解析，并复跑测试。
+2. **按 `docs/verification.md` 复跑验收**，记录自己机器的环境和真实输出。仓库已有 Linux 实测记录；不要将其冒充自己的本机结果。远端 CI 状态以 Actions 为准。
 
 ## 8. 常见问题
 

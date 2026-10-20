@@ -234,9 +234,12 @@ def _run(runtime: AppRuntime, args: argparse.Namespace) -> int:
                 return 1
             edited = content
         try:
+            current = runtime.read_thread(args.thread_id, user_id=args.user_id)
             turn = runtime.resume_turn(
                 args.thread_id,
                 args.resume,
+                interrupt_id=(current.get("interrupt") or {}).get("id") or current.get("approval_interrupt_id"),
+                report_id=current.get("report_id"),
                 comment=args.comment,
                 edited_report=edited,
                 user_id=args.user_id,
@@ -246,11 +249,14 @@ def _run(runtime: AppRuntime, args: argparse.Namespace) -> int:
         _print_turn(turn, as_json=args.json)
         return 1 if turn.get("status") in {"failed", "budget_exceeded"} else 0
 
-    turn = runtime.invoke_turn(
-        str(args.question or ""),
-        thread_id=args.thread_id,
-        user_id=args.user_id,
-    )
+    try:
+        turn = runtime.invoke_turn(
+            str(args.question or ""),
+            thread_id=args.thread_id,
+            user_id=args.user_id,
+        )
+    except (ValueError, ThreadNotFoundError) as exc:
+        return _fail(str(exc))
     _print_turn(turn, as_json=args.json)
     return 1 if turn.get("status") in {"failed", "budget_exceeded"} else 0
 

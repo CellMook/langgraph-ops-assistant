@@ -71,8 +71,8 @@ Harness 具体做五件事：
 | --- | --- | --- |
 | 不懂你的业务口径 | 会把“销售额”当毛销售额 | 口径写进系统提示词 + 知识库引用 + 程序计算 |
 | 不校验数字 | 模型可能心算错 | 数字全部来自工具/纯计算，模型只复述 |
-| 不控制预算 | 可能反复调工具烧钱 | 图里加 `budget` + `max_tool_calls`（单元 08） |
-| 不做审批 | 报告可能未经人看就发出 | `review` 节点 + `interrupt`（单元 16） |
+| 默认装配未必有预算 | 可能反复调工具 | 本项目加 ToolCallLimitMiddleware 与 ModelCallLimitMiddleware |
+| 默认装配未必有审批 | 需要显式启用 | 可用 HITL middleware；本项目正式流程用 review 节点 |
 | 不保证可恢复 | 进程一挂全丢 | `SqliteSaver`（单元 09、17） |
 | 不生成可审计报告 | 只有一段聊天记录 | 模板渲染 + `sources` + 导出（单元 17） |
 
@@ -105,22 +105,16 @@ Harness 具体做五件事：
 
 ---
 
-## 4. 这个知识在主项目中的位置
+## 4. 在主项目中的准确接口（2026-10-20 修订）
 
-| 项目位置 | 内容 |
+| 接口 | 实际契约 |
 | --- | --- |
-| `src/ops_assistant/agent/simple_agent.py` | `build_simple_agent(llm, tools, checkpointer=None) -> CompiledStateGraph \| None`；模型不可用返回 `None` |
-| 同上 | `run_simple_agent(agent, thread_id, question) -> {"answer": str, "used_fallback": bool, "sources": list[dict]}` |
-| 同上 | 回退时调用 `domain/` 的规则解析 + 计算，返回 `used_fallback=True` |
-| `src/ops_assistant/agent/tools.py` | 传入的工具（单元 04 的六个） |
-| `src/ops_assistant/config.py` | `llm_enabled` 决定传不传模型 |
-| `src/ops_assistant/api/main.py` | API 层（单元 19）；聊天端点走**图**，不走这个简版 |
+| `build_simple_agent(settings, conn, kb)` | 构造带工具/模型次数中间件的 create_agent；模型不可用返回 None |
+| `run_simple_agent(question, *, settings, conn, kb, thread_id="demo")` | 返回 status/answer/sources/trace/usage；无模型返回 unavailable，不自行切换为规则工作流 |
+| `教程/实验/05_simple_agent.py` | 为教学另行实现 rule_fallback，used_fallback 是该实验的字段 |
+| `/api/chat` | 正式固定工作流；不等于 simple_agent 入口 |
 
-**为什么项目里 `build_simple_agent` 可能返回 `None`**：这不是“代码没写完”，而是契约：模型不可用时，调用方必须显式处理回退，而不是让程序崩。`run_simple_agent` 的 `used_fallback` 字段就是给 UI 提示“本次答案来自规则模式”的。
-
-> **接口以工程规格 5.5 为准**；项目源码由团队成员并行实现，本单元只引用这些确定的名字与返回字段，不猜测内部实现细节。
-
----
+LangChain 的 middleware 可以实现工具限额、模型限额与 HITL；是否启用取决于装配。正式报告仍由程序计算、模板渲染并进入版本化审批。
 
 ## 5. 文件、完整代码、配置与命令
 
@@ -354,33 +348,23 @@ cd "D:\MySpace\LangChain学习路线\ops-assistant"
 uv run python ../教程/实验/05_simple_agent.py
 ```
 
-### 5.3 项目的 `build_simple_agent`：契约行为
-
-工程规格 5.5 定的契约（**以项目源码为准**）：
+### 5.3 项目的接口调用
 
 ```python
-def build_simple_agent(llm, tools, checkpointer=None):
-    """返回编译后的 agent 图；llm 为 None 时返回 None（调用方走回退）。"""
+from ops_assistant.agent.simple_agent import run_simple_agent
+from ops_assistant.config import load_settings
+from ops_assistant.workflow.persistence import AppRuntime
 
-
-def run_simple_agent(agent, thread_id: str, question: str) -> dict:
-    """返回 {"answer": str, "used_fallback": bool, "sources": list[dict]}。"""
+runtime = AppRuntime.create(load_settings())
+try:
+    result = run_simple_agent("2026年9月销售额比8月变化多少？",
+                              settings=runtime.settings, conn=runtime.conn, kb=runtime.kb)
+    print(result["status"], result["answer"])
+finally:
+    runtime.close()
 ```
 
-调用方（例如 API 层或教学脚本）必须写成：
-
-```python
-agent = build_simple_agent(llm, tools, checkpointer=saver)
-result = run_simple_agent(agent, thread_id="demo-thread", question="九月比八月变化多少？")
-if result["used_fallback"]:
-    print("注意：本次回答来自规则模式，不是模型。")
-```
-
-三个关键点：
-
-1. `agent is None` 不等于失败，而是“请走回退”。
-2. `used_fallback` 必须透传到 UI/API，否则用户会以为看到的是模型答案。
-3. `thread_id` 即使简版 agent 也保留参数，方便以后接 checkpointer 时不改调用方。
+没有密钥时输出 unavailable。若要走可离线运行的正式报告路径，显式调用 `runtime.invoke_turn`；不要用模型的空结果悄悄冒充模型答案。该简版不保存多轮历史，thread_id 仅回显。
 
 ### 5.4 `create_agent` 与“自己画图”的代码量对比（定性）
 

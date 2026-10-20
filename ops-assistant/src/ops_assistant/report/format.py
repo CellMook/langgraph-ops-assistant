@@ -189,7 +189,7 @@ def render_analysis_report(
     metric_pct = calc.get("metric_pct")
     base_zero = bool(calc.get("metric_base_zero", False))
 
-    net_delta = calc.get("delta_net_cents")
+    net_delta = calc.get("metric_delta_cents", calc.get("delta_net_cents"))
     net_delta = None if net_delta is None else int(net_delta)
     region_sum = calc.get("region_delta_sum_cents")
     region_sum = None if region_sum is None else int(region_sum)
@@ -204,8 +204,7 @@ def render_analysis_report(
     lines.append("# 经营数据分析报告")
     lines.append("")
     lines.append(
-        "> 本报告由程序按固定模板渲染：所有数字均由程序计算后注入，"
-        "模板与任何模型都不产生数字，也不对原因做推断。"
+        "> 本报告由程序按固定模板渲染：所有数字均由程序计算后注入，模板与任何模型都不产生数字，也不对原因做推断。"
     )
     lines.append("")
     lines.append(f"- 问题：{question.strip() or '（未记录）'}")
@@ -336,7 +335,7 @@ def render_analysis_report(
                 f"{_money(net_delta, unit)} {agree}（分解只改变展示方式，不改变总量）。"
             )
             lines.append("")
-        lines.append("- 各地区金额均为净销售额（毛销售额 − 已批准退款额），正负号表示相对上期的增减。")
+        lines.append(f"- 各地区金额均为{metric_label}，正负号表示相对上期的增减。")
         lines.append("")
 
     # ---------------- 4. 口径与依据 ----------------
@@ -409,12 +408,12 @@ def render_analysis_report(
         f"{format_int(net_previous)} 分（= {_money(net_previous, unit)}）"
     )
     lines.append(
-        f"- 差额：{format_int(net_current)} − {format_int(net_previous)} = "
+        f"- {metric_label}差额：{format_int(metric_current)} − {format_int(metric_previous)} = "
         f"{format_int(net_delta)} 分（= {_money(net_delta, unit)}）"
     )
     lines.append(
-        f"- 变化率：{format_int(net_delta)} / |{format_int(net_previous)}| = "
-        f"{format_pct(calc.get('pct_change'), base_zero=bool(calc.get('base_zero')))}"
+        f"- 变化率：{format_int(metric_delta)} / |{format_int(metric_previous)}| = "
+        f"{format_pct(metric_pct, base_zero=base_zero)}"
     )
     if metric != "net_sales":
         lines.append(
@@ -435,8 +434,8 @@ def render_analysis_report(
     lines.append("- 数据来自本地 SQLite 演示数据集（固定随机种子生成），不代表真实经营事实。")
     lines.append("- 会话级偏好、知识库检索与模型润色都可能影响措辞，但不会影响任何数字。")
     lines.append("- 本轮未做并发压测、未连接真实生产数据库、未做人工事实核查与模型评估。")
-    lines.append("- 报告导出为单一 Markdown 文件；文件名由 thread_id 决定，重复导出覆盖同一路径。")
-    for note in (notes or []):
+    lines.append("- 报告按独立 report_id 保存；同一报告重试复用产物，新报告不覆盖旧报告。")
+    for note in notes or []:
         text = str(note).strip()
         if not text:
             continue
@@ -483,7 +482,7 @@ def _boundary_bullets(
     if edge.get("current_no_records"):
         bullets.append(
             f"- 无记录：{current_month} 没有任何订单（has_orders=False），"
-            "因此不写“销售额为 0”，上表相关金额只代表无数据。"
+            "毛销售额和订单数为 0；若有跨月退款，退款额与净销售额仍是有效数据。"
         )
     elif edge.get("true_zero"):
         bullets.append(
@@ -492,15 +491,13 @@ def _boundary_bullets(
         )
     if edge.get("previous_no_records"):
         bullets.append(
-            f"- 无记录：上期 {previous_month} 没有任何订单，基期金额按 0 参与计算，"
-            "但这不代表真实销售额为 0。"
+            f"- 无记录：上期 {previous_month} 没有任何订单，基期金额按 0 参与计算，但这不代表真实销售额为 0。"
         )
     if edge.get("base_zero"):
         bullets.append("- 零基数：上期同一指标为 0，变化率无定义；建议改看差额，或把比较区间拉长。")
     if edge.get("negative_net"):
         bullets.append(
-            "- 负净额：本期或上期存在“退款额 > 毛销售额”的情况，净销售额为负是公式的正常结果；"
-            "本报告不对其成因做推断。"
+            "- 负净额：本期或上期存在“退款额 > 毛销售额”的情况，净销售额为负是公式的正常结果；本报告不对其成因做推断。"
         )
     if edge.get("pending_refunds"):
         bullets.append(
@@ -514,9 +511,9 @@ def _boundary_bullets(
     if previous and order_count_previous is None:
         bullets.append("- 上期订单数缺失，仅展示金额相关字段。")
 
-    for name in (edge.get("zero_order_regions_current") or []):
+    for name in edge.get("zero_order_regions_current") or []:
         bullets.append(f"- 地区无记录：{name} 在本期没有订单（不是“销售额为 0”）。")
-    for name in (edge.get("zero_order_regions_previous") or []):
+    for name in edge.get("zero_order_regions_previous") or []:
         bullets.append(f"- 地区无记录：{name} 在上期没有订单。")
     if regions_filter:
         bullets.append(f"- 地区过滤：本报告只统计 {'、'.join(regions_filter)}，总量已按过滤后重算。")
@@ -526,9 +523,7 @@ def _boundary_bullets(
             "程序没有静默忽略，而是显式标注。"
         )
     if edge.get("delta_sum_matches") is False:
-        bullets.append(
-            "- 校验不一致：各地区差额合计与总差额不相等，可能存在未被分解的地区或过滤差异，请以明细为准。"
-        )
+        bullets.append("- 校验不一致：各地区差额合计与总差额不相等，可能存在未被分解的地区或过滤差异，请以明细为准。")
 
     if not bullets:
         bullets.append("- 本期数据未触发无记录 / 真零 / 零基数 / 负净额等边界情况，数字可直接按金额口径理解。")
@@ -574,7 +569,7 @@ def _sources_section(sources: Sequence[Mapping[str, Any]]) -> list[str]:
             chunk_id = str(item.get("chunk_id") or "").strip()
             title = str(item.get("title") or "").strip()
             snippet = str(item.get("snippet") or "").strip()
-            ref = f"[{doc_id}#{chunk_id}]"
+            ref = f"[{chunk_id if '#' in chunk_id else doc_id + '#' + chunk_id}]"
             suffix = f"《{title}》" if title else ""
             lines.append(f"- {ref}{suffix}：{snippet}")
     else:

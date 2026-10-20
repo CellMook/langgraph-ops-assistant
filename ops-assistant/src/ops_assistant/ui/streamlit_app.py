@@ -31,6 +31,7 @@ REQUEST_TIMEOUT = 180.0
 
 STATUS_LABELS = {
     "running": "执行中",
+    "answered": "已回答",
     "awaiting_approval": "等待审批",
     "approved": "已批准（已导出）",
     "rejected": "已拒绝（未导出）",
@@ -43,8 +44,6 @@ STATUS_LABELS = {
 
 DIMENSION_LABELS = {
     "region": "地区",
-    "product": "商品",
-    "month": "月份",
 }
 DIMENSION_BY_LABEL = {label: key for key, label in DIMENSION_LABELS.items()}
 
@@ -145,13 +144,19 @@ def api_resume(
     comment: str,
     edited_report: str,
     user_id: str,
+    interrupt_id: str,
+    report_id: str,
+    content_hash: str,
 ) -> dict[str, Any]:
-    """提交审批结论。"""
+    """提交用户看到的报告版本的审批结论。"""
     return _request(
         "POST",
         f"/api/threads/{quote(thread_id, safe='')}/resume",
         json_body={
             "decision": decision,
+            "interrupt_id": interrupt_id,
+            "report_id": report_id,
+            "content_hash": content_hash,
             "comment": comment,
             "edited_report": edited_report or None,
             "user_id": user_id,
@@ -192,6 +197,8 @@ def _rerun() -> None:
 
 def _init_state() -> None:
     """初始化会话级状态（只放标识，不放业务数据）。"""
+    if "select_thread_next" in st.session_state:
+        st.session_state.thread_choice = st.session_state.pop("select_thread_next")
     st.session_state.setdefault("user_id", DEFAULT_USER_ID)
     st.session_state.setdefault("thread_id", None)
     st.session_state.setdefault("turn", None)
@@ -211,8 +218,7 @@ def _load_health() -> dict[str, Any] | None:
         st.sidebar.error(f"后端不可用：{exc}")
         with st.sidebar.expander("如何启动后端", expanded=True):
             st.code(
-                "cd ops-assistant\n"
-                "uv run uvicorn ops_assistant.api.main:app --host 127.0.0.1 --port 8000",
+                "cd ops-assistant\nuv run uvicorn ops_assistant.api.main:app --host 127.0.0.1 --port 8000",
                 language="bash",
             )
         return None
@@ -247,6 +253,7 @@ def _render_sidebar(health: dict[str, Any] | None) -> None:
     sidebar.subheader("会话")
     if sidebar.button("＋ 新建会话", key="new_thread_button"):
         st.session_state.thread_id = None
+        st.session_state.thread_choice = None
         st.session_state.turn = None
         _rerun()
 
@@ -304,7 +311,7 @@ def _render_thread_list(sidebar: Any) -> None:
         sidebar.warning(f"读取会话列表失败：{exc}")
         return
 
-    options: list[str] = []
+    options: list[str | None] = [None]
     labels: dict[str, str] = {}
     for item in items:
         thread_id = str(item.get("thread_id") or "")
@@ -324,9 +331,17 @@ def _render_thread_list(sidebar: Any) -> None:
         sidebar.caption("还没有历史会话，直接提问即可创建。")
         return
 
-    index = options.index(current) if current in options else 0
-    selected = sidebar.selectbox("选择会话", options, index=index, format_func=lambda value: labels.get(value, value))
-    if not selected or selected == st.session_state.get("thread_id"):
+    st.session_state.setdefault("thread_choice", current)
+    selected = sidebar.selectbox(
+        "选择会话",
+        options,
+        index=None,
+        key="thread_choice",
+        format_func=lambda value: "＋ 新会话" if value is None else labels.get(value, value),
+    )
+    if selected is None:
+        st.session_state.thread_id = None
+        st.session_state.turn = None
         return
     try:
         turn = api_read_thread(selected, user_id)
@@ -390,10 +405,7 @@ def _render_tables(turn: dict[str, Any]) -> None:
             continue
         data: dict[str, list[Any]] = {}
         for index, column in enumerate(columns):
-            data[column] = [
-                row[index] if index < len(row) else ""
-                for row in rows
-            ]
+            data[column] = [row[index] if index < len(row) else "" for row in rows]
         with st.expander(title, expanded=False):
             st.dataframe(data)
 
@@ -459,9 +471,7 @@ def _render_sources(turn: dict[str, Any]) -> None:
                 doc_id = str(source.get("doc_id") or "")
                 chunk_id = str(source.get("chunk_id") or "")
                 ref = f"[{doc_id}#{chunk_id}]"
-            st.markdown(
-                f"- `{ref}`《{source.get('title') or ''}》：{source.get('snippet') or ''}"
-            )
+            st.markdown(f"- `{ref}`《{source.get('title') or ''}》：{source.get('snippet') or ''}")
 
 
 def _render_approval(turn: dict[str, Any]) -> None:
@@ -480,10 +490,10 @@ def _render_approval(turn: dict[str, Any]) -> None:
 
     comment = st.text_input("审批备注（可选）", key=f"comment_{thread_id}")
     edited = st.text_area(
-        "修改稿（选择 edit 时使用；只能改措辞，不能改数字）",
+        "报告正文只读；选择 edit 时可在末尾追加无数字人工备注",
         value=str(payload.get("report_markdown") or ""),
         height=260,
-        key=f"edited_{thread_id}",
+        key=f"edited_{thread_id}_{turn.get('report_id', '')}",
     )
     columns = st.columns(3)
     with columns[0]:
@@ -534,6 +544,7 @@ def _handle_chat(question: str) -> None:
         return
     st.session_state.turn = turn
     st.session_state.thread_id = turn.get("thread_id")
+    st.session_state.select_thread_next = turn.get("thread_id")
     _rerun()
 
 
@@ -551,6 +562,9 @@ def _handle_resume(turn: dict[str, Any], decision: str, *, comment: str, edited_
             comment=str(comment or ""),
             edited_report=str(edited_report or "") if decision == "edit" else "",
             user_id=user_id,
+            interrupt_id=str((turn.get("interrupt") or {}).get("id") or ""),
+            report_id=str(turn.get("report_id") or ""),
+            content_hash=str((turn.get("interrupt") or {}).get("payload", {}).get("content_hash") or ""),
         )
     except ApiError as exc:
         st.error(f"审批失败：{exc}")

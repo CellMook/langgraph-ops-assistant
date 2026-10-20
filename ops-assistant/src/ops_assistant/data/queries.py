@@ -136,7 +136,12 @@ def _month_range(month: str) -> tuple[str, str]:
     return f"{month}-01", f"{next_year:04d}-{next_month_number:02d}-01"
 
 
-def get_month_sales(conn: sqlite3.Connection, month: str) -> MonthSales:
+def get_month_sales(
+    conn: sqlite3.Connection,
+    month: str,
+    *,
+    region_ids: tuple[str, ...] | None = None,
+) -> MonthSales:
     """查询某个月的毛销售额、退款额、净销售额与订单/退款计数。
 
     参数：
@@ -149,9 +154,20 @@ def get_month_sales(conn: sqlite3.Connection, month: str) -> MonthSales:
     normalized = _validate_month(month)
     start, end = _month_range(normalized)
 
-    order_row = conn.execute(_ORDER_AGG_SQL, (start, end)).fetchone()
-    refund_row = conn.execute(_REFUND_AGG_SQL, (start, end)).fetchone()
-    refund_count_row = conn.execute(_REFUND_COUNT_SQL, (start, end)).fetchone()
+    if region_ids:
+        placeholders = ",".join("?" for _ in region_ids)
+        params = (start, end, *region_ids)
+        order_row = conn.execute(
+            _ORDER_AGG_SQL + f" AND region_id IN ({placeholders})",
+            params,
+        ).fetchone()
+        scope = f" AND order_id IN (SELECT order_id FROM orders WHERE region_id IN ({placeholders}))"
+        refund_row = conn.execute(_REFUND_AGG_SQL + scope, params).fetchone()
+        refund_count_row = conn.execute(_REFUND_COUNT_SQL + scope, params).fetchone()
+    else:
+        order_row = conn.execute(_ORDER_AGG_SQL, (start, end)).fetchone()
+        refund_row = conn.execute(_REFUND_AGG_SQL, (start, end)).fetchone()
+        refund_count_row = conn.execute(_REFUND_COUNT_SQL, (start, end)).fetchone()
 
     gross_cents = int(order_row["gross_cents"])
     order_count = int(order_row["order_count"])
@@ -271,9 +287,7 @@ def list_regions(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     返回：
         字典列表，键为 ``region_id`` / ``region_name`` / ``manager``，按 ``region_id`` 升序。
     """
-    rows = conn.execute(
-        "SELECT region_id, region_name, manager FROM regions ORDER BY region_id"
-    ).fetchall()
+    rows = conn.execute("SELECT region_id, region_name, manager FROM regions ORDER BY region_id").fetchall()
     return [
         {
             "region_id": str(row["region_id"]),

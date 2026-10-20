@@ -1,24 +1,20 @@
 # 已知限制、未验证项与改进清单
 
+> 当前问题解析器是限定语法的规则实现，覆盖显式年月、相对月、同比、from/to 与地区追问；不能承诺任意自然语言理解。利润/成本/订单数等未实现指标会澄清。已知引用校验仅保证摘录来自命中块，无法保证知识库本身正确、完整或对当前问题充分。导出原子性与进程内锁不提供跨 worker 的事务或 exactly-once 保障。
+
 这份文档存在的目的：**让"我不知道/没验证/做不到"变成可检索的信息**，而不是藏在心里。
 面试时主动讲限制，远比被追问出漏洞好。
 
 ## 1. 先说最关键的：哪些结论没有实测
 
-**2026-10-19 更新**：初稿编写环境无法启动任何进程（`pwsh` 返回 `0xC0000142`），当时下表全部未做。
-审查阶段已在 Linux 沙箱补齐大部分实测（`uv sync`/`uv.lock`、`compileall`、`pytest` 176/176、
-`bootstrap.py`、uvicorn/streamlit 均已实际运行，详见 `verification.md`）。**当前仍未验证的**：
+2026-10-20 已完成锁定安装、220 测试、20 条确定性评估、23 个实验脚本、UI 与独立进程恢复实测，见 [verification](verification.md)。仍未验证：
 
-| 仍未做的事 | 后果 |
+| 项目 | 限制 |
 | --- | --- |
-| `check_model.py`（真实模型） | 未验证任何真实模型的工具调用/结构化输出能力（无 API Key） |
-| 有密钥时的模型润色分支 | `LLM_POLISH_*` 降级路径未在真实模型下观察过 |
-| 真实 embedding 召回质量 | 索引仍用确定性哈希向量，语义检索效果未评估 |
-| 多用户并发 / 部署 | 单 worker 进程内单例，未做压测 |
-
-**唯一做过的是**：读代码逐项核对接口与字段（见 `verification.md` 第 5 节）、以及所有文档里的"预期输出"都标注为未执行。
-
-> 谁要说"这个项目测试通过"，必须先在自己机器上跑 `uv run pytest -q` 并贴输出。
+| 真实 LLM 与 embedding | 无 API Key，未评估工具选择、真实结构化输出、延迟与召回质量 |
+| Windows 与远端 CI | 本轮只在 Linux / Python 3.12.14 实测；已新增矩阵，结果以 Actions 为准 |
+| 浏览器显示 | Streamlit AppTest 已测交互，未做像素或跨浏览器验证 |
+| 多用户与并发部署 | 仅单 worker 演示，无认证，不能对公网作为多用户服务 |
 
 ## 2. 已实现（代码在，逻辑闭环）
 
@@ -26,10 +22,10 @@
 - SQLite 数据层：四表 schema、固定种子生成、8 类边界事实、参数化查询；
 - 指标层：gross/refund/net、退款按 `refund_date` 归属、零基数、地区差额分解与合计校验；
 - 知识层：Markdown 加载、400/60 切分、关键词基线、哈希向量检索、引用校验、"资料不足"；
-- 工作流：10 节点、3 处条件路由、预算、repair 重试、统一 fail 出口；
+- 工作流：10 节点、4 处条件路由、预算、repair 重试、统一 fail 出口；
 - 人工审批：`interrupt` + `Command(resume=)` + approve/reject/edit + 幂等导出；
 - 持久化：`SqliteSaver` 检查点（重启可恢复）、`PreferenceStore` 偏好存储；
-- 接口：FastAPI 9 个端点 + 统一错误结构；Streamlit 页面；
+- 接口：FastAPI 端点 + 统一错误结构；Streamlit 页面；
 - 可观测性：结构化日志（脱敏）、指标快照、`TurnResult.trace`；
 - 测试与评估：`tests/`（T01–T23 覆盖）、`eval/cases.jsonl` + `run_eval.py`。
 
@@ -42,9 +38,9 @@
 | `sources` 没有 reducer | 各节点 `list(state.get("sources") or [])` 后整体返回 | 任一节点漏读旧值就**静默丢来源**，测试不易发现 | 加 `merge_sources` reducer 并按 `(type, doc_id/sql)` 去重 |
 | 展示用 SQL 与执行 SQL 是两份维护源 | `nodes.py` 里的 `MONTH_SALES_SQL` 等常量只作审计说明 | 改口径只改一处会造成报告与实现漂移 | 从 `queries.py` 反向生成展示 SQL，或只展示参数化模板 |
 | Store 用 SQLite 鸭子类型适配器 | `PreferenceStore` | 与官方 Store 语义不完全一致 | 用官方 Store 实现或明确抽象接口 |
-| 审批只校验"原数字是否保留 + 是否新增数字" | `_edited_report_or_draft` | 无法识别同义改写级别的措辞篡改 | 加 diff 展示 + 人工二次确认 |
+| 审批正文只读，只能追加无数字备注 | `_edited_report_or_draft` | 编辑自由度有限；备注不等于自动事实核验 | 如需改正文，重新生成新版本并复核 |
 | 单 worker、进程内锁 | `AppRuntime.lock` | 跨进程并发不安全 | 引入任务队列或数据库行级锁 |
-| 报告与导出在本地 | `data/exports/` | 无权限控制、无审计留痕 | 加操作审计表与访问控制 |
+| 报告与导出在本地 | 版本化文件 + checkpoint 历史 | 有 user_id 所属检查，但调用方可自报 user_id，无认证；不是防篡改审计账本 | 接入身份认证和持久审计表 |
 
 ## 4. 明确未实现 / 未来计划
 
@@ -81,8 +77,8 @@ Select-String -Path .\src\ops_assistant\workflow\nodes.py -Pattern "sources"
 Select-String -Path .\src\ops_assistant\workflow\nodes.py -Pattern "_SQL"
 # 3) 哈希向量不是语义模型
 Select-String -Path .\src\ops_assistant\knowledge\embeddings.py -Pattern "HASHING_NOTE"
-# 4) 没有 uv.lock
-Test-Path .\uv.lock    # 预期 False
+# 4) 锁文件已提交
+Test-Path .\uv.lock    # 预期 True
 # 5) 没有运行生成物
 Test-Path .\data\ops.db # 预期 False（除非你已跑过 bootstrap）
 ```

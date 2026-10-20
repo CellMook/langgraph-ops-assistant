@@ -20,9 +20,7 @@ import pytest
 
 from ops_assistant.workflow.persistence import AppRuntime, ThreadNotFoundError
 
-MAIN_QUESTION = (
-    "2026 年九月销售额比八月变化多少？按地区分解差额，并说明销售额是否扣除了退款。"
-)
+MAIN_QUESTION = "2026 年九月销售额比八月变化多少？按地区分解差额，并说明销售额是否扣除了退款。"
 
 
 @pytest.fixture()
@@ -109,30 +107,25 @@ def test_t22_edit_keeps_numbers_and_exports(runtime: AppRuntime, pending: dict[s
     assert "人工备注" in content
 
 
-def test_t22_edit_that_injects_numbers_falls_back_to_draft(
-    runtime: AppRuntime, pending: dict[str, Any]
-) -> None:
-    """T22：编辑稿新增未计算的数字时必须回退原草稿，不能让审批绕过计算。"""
-    draft = pending["report"]
-    tampered = draft.replace("## 结论", "## 结论\n\n编造数字：销售额为 99999999 元。", 1)
-    result = runtime.resume_turn(pending["thread_id"], "edit", edited_report=tampered)
-    assert result["status"] == "approved"
-    assert result["export_path"] is not None
-    content = Path(result["export_path"]).read_text(encoding="utf-8")
-    assert "99999999" not in content, "新增数字不应被导出"
-    assert any("新增了原报告中没有的数字" in message for message in result["errors"])
+def test_t22_invalid_edit_keeps_approval_pending(runtime: AppRuntime, pending: dict[str, Any]) -> None:
+    """非法修改直接拒绝，原草稿仍待审批，不能自动批准另一份内容。"""
+    tampered = pending["report"].replace("## 结论", "## 结论\n编造金额 99999999 元。", 1)
+    with pytest.raises(ValueError, match="INVALID_EDIT"):
+        runtime.resume_turn(pending["thread_id"], "edit", edited_report=tampered)
+    current = runtime.read_thread(pending["thread_id"])
+    assert current["interrupt"] is not None
+    assert current["status"] == "awaiting_approval"
+    assert current["export_path"] is None
 
 
-def test_t22_repeat_approval_is_idempotent(
-    runtime: AppRuntime, pending: dict[str, Any]
-) -> None:
+def test_t22_repeat_approval_is_idempotent(runtime: AppRuntime, pending: dict[str, Any]) -> None:
     """T22：同一份报告重复确认，返回同一路径且不产生第二份文件。"""
     first = runtime.resume_turn(pending["thread_id"], "approve")
     second = runtime.resume_turn(pending["thread_id"], "approve")
     assert first["export_path"] == second["export_path"]
     export_dir = Path(runtime.settings.export_dir)
     files = sorted(path.name for path in export_dir.glob(f"report-{pending['thread_id']}*.md"))
-    assert files == [f"report-{pending['thread_id']}.md"]
+    assert files == [Path(first["export_path"]).name]
 
 
 def test_t22_export_uses_atomic_replace(runtime: AppRuntime, pending: dict[str, Any]) -> None:

@@ -49,7 +49,7 @@
 | GET | `/api/threads` | 会话列表（按更新时间倒序） | 200 |
 | GET | `/api/threads/{id}` | 读取会话当前状态（不推进图） | 200 / 404 |
 | POST | `/api/chat` | 跑一轮，直到审批或终态 | 200 / 422 |
-| POST | `/api/threads/{id}/resume` | 提交审批结论 | 200 / 400 / 404 / 409 |
+| POST | `/api/threads/{id}/resume` | 提交审批结论 | 200 / 404 / 409 / 422 |
 | GET | `/api/threads/{id}/report` | 读取已导出 Markdown | 200 / 404 |
 | GET/PUT | `/api/preferences` | 跨会话偏好（Store 适配器） | 200 |
 
@@ -93,14 +93,14 @@ $turn.report.Substring(0, 120)
 
 # 3) 审批通过
 $threadId = $turn.thread_id
-$resume = @{ decision = "approve"; comment = "口径确认" } | ConvertTo-Json
+$resume = @{ decision = "approve"; comment = "口径确认"; report_id = $turn.report_id; interrupt_id = $turn.interrupt.id; content_hash = $turn.interrupt.payload.content_hash } | ConvertTo-Json
 $approved = Invoke-RestMethod -Method Post -Uri "$api/api/threads/$threadId/resume" -ContentType "application/json" -Body $resume
 $approved.status        # 预期：approved
 $approved.export_path
 
 # 4) 下载报告
 $report = Invoke-RestMethod -Uri "$api/api/threads/$threadId/report"
-$report.filename        # 预期：report-<threadId>.md
+$report.filename        # 预期：report-<threadId>-<report_id>.md
 $report.markdown.Substring(0, 120)
 
 # 5) 追问（同一 thread）
@@ -147,8 +147,8 @@ thread_id         : 0f3c1e2a-...
 report 前 120 字  : ## 结论\n\n本期（2026-09）净销售额为 ...；...
 （审批后）
 status            : approved
-export_path       : D:\...\ops-assistant\data\exports\report-<threadId>.md
-filename          : report-<threadId>.md
+export_path       : D:\...\ops-assistant\data\exports\report-<threadId>-<report_id>.md
+filename          : report-<threadId>-<report_id>.md
 markdown 前 120 字 : ## 结论\n\n...
 （追问后）
 status            : awaiting_approval
@@ -183,7 +183,7 @@ regions.Count     : 1
 
 1. **API 没起就开 UI**：UI 报连接错误。检查顺序：端口 → `uvicorn` 日志 → `/api/health`。
 2. **起两个 uvicorn worker**：`--workers 2` 时共享 SQLite 连接与锁会失效，可能出现重复导出/状态错乱。本项目明确要求单 worker。
-3. **端口被占用**：换 `--port 8001`，同时改 UI 的 `OPS_API_BASE`（若已配置）。
+3. **端口被占用**：换 `--port 8001`，同时改 UI 的 `OPS_API_BASE_URL`（若已配置）。
 4. **审批后直接刷新页面**：状态应为 `approved` 且能下载；如果不能，说明 UI 没有重新拉取。
 5. **请求体缺字段**：`POST /api/chat` 传 `{}` → 422 且 `detail.code == "VALIDATION_ERROR"`。
 6. **SQLite 文件只读**：启动时 health 报 `db_ok=false` 或运行时 `GRAPH_ERROR`；修复文件权限后重启。
@@ -211,3 +211,6 @@ A：审批是业务动作，HTTP 200 表示"请求已处理"；业务结论在 `
 A：不需要，也不应该。UI 只渲染 `tables` / `chart` / `report`，所有数字来自服务端程序计算。
 
 **下一步**：单元 20 讲怎么证明"它是对的"——测试集、确定性评估与可观测性，以及哪些结论**不能**由模拟测试得出。
+
+
+**版本历史与冲突**：`GET /api/threads/{id}/reports` 列出已导出报告；`GET /api/threads/{id}/report?report_id=...` 下载旧版本。缺少或过期审批身份返回 409；非法正文修改返回 422。新建会话必须选择空的“新会话”，刷新当前会话从 API 重新读状态。
