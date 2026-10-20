@@ -17,7 +17,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from conftest import build_settings
 from ops_assistant.config import ensure_dirs
 from ops_assistant.data.generate import generate_database
-from ops_assistant.domain.question import parse_question
+from ops_assistant.domain.question import QuestionSpec, parse_question
 from ops_assistant.workflow.nodes import _edited_report_or_draft
 from ops_assistant.workflow.persistence import AppRuntime
 
@@ -474,3 +474,173 @@ def test_no_orders_with_refund_is_not_described_as_missing_amounts(runtime):
 def test_scoped_detail_rows_do_not_include_other_regions(runtime):
     turn = runtime.invoke_turn("2026年9月华东销售额是多少？")
     assert {row[0] for row in turn["tables"][0]["rows"]} == {"R_EAST"}
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-20 第三轮实测审查：解析语义与导出路径
+# ---------------------------------------------------------------------------
+
+TODAY = date(2026, 10, 20)
+AUDIT_REGIONS = [
+    {"region_id": "R_EAST", "region_name": "华东"},
+    {"region_id": "R_NE", "region_name": "东北"},
+    {"region_id": "R_NORTH", "region_name": "华北"},
+    {"region_id": "R_SOUTH", "region_name": "华南"},
+    {"region_id": "R_SW", "region_name": "西南"},
+]
+
+
+def parse(text):
+    return parse_question(
+        text, today=TODAY, known_regions=AUDIT_REGIONS, min_month="2025-01", max_month="2026-09"
+    )
+
+
+@pytest.mark.parametrize(
+    "question,current,previous",
+    [
+        # 无空格与有空格必须解析成同一结果：空格曾让“去年同期”退化成今年同月。
+        ("今年9月比去年9月变化多少", "2026-09", "2025-09"),
+        ("今年 9 月比去年 9 月变化多少", "2026-09", "2025-09"),
+        ("2026年9月比去年9月变化多少", "2026-09", "2025-09"),
+        ("2026 年 9 月比去年 9 月变化多少", "2026-09", "2025-09"),
+        ("2026 年 9 月相对于去年 9 月变化多少", "2026-09", "2025-09"),
+    ],
+)
+def test_relative_year_anchor_tolerates_whitespace(question, current, previous):
+    """“比去年 9 月”里的空格不得让基期塌缩成当期（差额恒为 0）。"""
+    spec = parse(question)
+    assert (spec.current_month, spec.previous_month) == (current, previous)
+    assert spec.current_month != spec.previous_month
+
+
+def test_yoy_question_does_not_compare_period_with_itself(runtime):
+    """端到端：同比问题的本期与上期必须是两个不同期间，报告不得出现自比。"""
+    turn = runtime.invoke_turn("2026年9月比去年同期销售额变化多少？")
+    assert turn["status"] != "clarification", turn["clarification"]
+    assert (turn["spec"]["current_month"], turn["spec"]["previous_month"]) == ("2026-09", "2025-09")
+    assert "2026-09（本期）对比 2026-09（上期）" not in turn["report"]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "2026 年 9 月各地区销售额",
+        "2026年9月各地区销售额",
+        "2026 年 9 月各大区销售额",
+        "2026 年 9 月各区域销售额",
+        "2026 年 9 月每个地区销售额",
+        "2026 年 9 月各个地区销售额",
+        "2026 年 9 月按地区分解",
+        "2026 年 9 月分地区看销售额",
+        # “这个地区”是指示代词：_REGION_STOPWORDS 本就收录了它，只是此前被前导“月”字挡住。
+        "2026 年 9 月这个地区销售额",
+    ],
+)
+def test_region_distribution_phrases_are_not_unknown_regions(question):
+    """“各地区/按地区分解”是分布说法，不是地区名，不得触发未知地区澄清。"""
+    spec = parse(question)
+    assert spec.needs_clarification is False, spec.clarification
+    assert spec.input_error is None
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "2026 年 9 月各地区销售额",
+        "2026 年 9 月各大区销售额",
+        "2026 年 9 月各区域销售额",
+        "2026 年 9 月每个地区销售额",
+        "2026 年 9 月各个地区销售额",
+        "2026 年 9 月按地区分解",
+        "2026 年 9 月分地区看销售额",
+    ],
+)
+def test_region_distribution_phrases_select_region_dimension(question):
+    """真正要求分布的说法要落到 region 维度，否则只会静默出一份总量报告。"""
+    assert parse(question).dimension == "region"
+
+
+def test_region_distribution_question_produces_report(runtime):
+    """端到端：“各地区销售额”应出报告并带地区分解，而不是被澄清拦下。"""
+    turn = runtime.invoke_turn("2026年9月各地区销售额是多少？")
+    assert turn["status"] != "clarification", turn["clarification"]
+    assert turn["spec"]["dimension"] == "region"
+    assert turn["report"]
+
+
+@pytest.mark.parametrize(
+    "question,missing",
+    [
+        ("2026 年 9 月华中地区销售额是多少？", "华中"),
+        ("2026 年 9 月火星地区销售额是多少？", "火星"),
+        ("2026年9月华东和火星地区销售额是多少？", "火星"),
+    ],
+)
+def test_unknown_region_clarification_names_the_real_candidate(question, missing):
+    """未知地区仍须澄清，且话术要点出用户真正说的地区名，不能带上月份噪声。"""
+    spec = parse(question)
+    assert spec.needs_clarification is True
+    assert "未找到地区" in spec.clarification
+    assert f"「{missing}」" in spec.clarification, spec.clarification
+    assert "月" not in spec.clarification.split("。")[0]
+
+
+def test_known_region_follow_up_is_still_recognized():
+    """修复不得误伤既有追问形态。"""
+    spec = parse("那华东地区呢？")
+    assert spec.regions == ("R_EAST",)
+    assert spec.needs_clarification is False
+
+
+@pytest.mark.parametrize("value", [123, 45.6, None, ["华东"], {"region": "华东"}, b"bytes"])
+def test_parse_question_never_raises_on_non_string(value):
+    """模块契约是“解析失败不抛异常”：非字符串按 str() 收敛，不得抛 AttributeError。"""
+    spec = parse_question(value, today=TODAY, known_regions=AUDIT_REGIONS)
+    assert isinstance(spec, QuestionSpec)
+    assert isinstance(spec.raw, str)
+
+
+@pytest.mark.parametrize("value", [123, 45.6, None])
+def test_non_string_input_without_period_still_clarifies(value):
+    """不含期间的非字符串输入仍走澄清，不得静默出数字。"""
+    spec = parse_question(value, today=TODAY, known_regions=AUDIT_REGIONS)
+    assert spec.needs_clarification is True
+    assert spec.clarification
+
+
+def test_exported_report_path_points_at_the_written_version(tmp_path):
+    """exported_report_path 必须指向真实产物：文件名一定带 report_id。"""
+    from ops_assistant.report.export import export_report, exported_report_path
+
+    directory = tmp_path / "exports"
+    written = export_report("# 报告正文", thread_id="t-123", export_dir=directory, report_id="r-9")
+
+    assert exported_report_path("t-123", directory, "r-9") == written
+    # 省略 report_id 时定位到该会话已存在的版本，而不是一个永远不存在的路径
+    located = exported_report_path("t-123", directory)
+    assert located == written
+    assert located.exists()
+
+
+def test_exported_report_path_without_any_version_is_not_invented(tmp_path):
+    """目录里还没有版本时，回退路径必须诚实地不存在，供调用方 exists() 判断。"""
+    from ops_assistant.report.export import exported_report_path
+
+    directory = tmp_path / "exports"
+    assert exported_report_path("t-123", directory).exists() is False
+    directory.mkdir(parents=True)
+    assert exported_report_path("t-123", directory).exists() is False
+
+
+def test_exported_report_path_picks_latest_version(tmp_path):
+    """多个版本共存时定位最近写入的那一份。"""
+    import os
+
+    from ops_assistant.report.export import export_report, exported_report_path
+
+    directory = tmp_path / "exports"
+    export_report("# v1", thread_id="t", export_dir=directory, report_id="r1")
+    second = export_report("# v2", thread_id="t", export_dir=directory, report_id="r2")
+    os.utime(second, (second.stat().st_atime + 10, second.stat().st_mtime + 10))
+    assert exported_report_path("t", directory) == second

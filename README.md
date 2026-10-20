@@ -10,7 +10,7 @@
 > **诚实声明（先读这一段）**
 > - 这是**教学与求职演示项目**，不是生产系统；演示数据由 `data/generate.py` 按固定随机种子（`SEED = 20260901`）生成，不包含任何真实业务数据。
 > - 本仓库**不做任何就业承诺**，也不声称"多少天精通"；它只展示我能讲清楚、能跑通、能解释取舍的东西。
-> - **验证状态（2026-10-20）**：Linux / Python 3.12.14 / uv 0.12.23，锁定依赖安装成功；220 项测试、20 条确定性评估、23 个实验脚本通过。真实本地 API + Streamlit 交互及三进程恢复已验证；真实模型、真实 embedding 与 Windows 本地执行未验证。详见 [验证记录](docs/verification.md) 与 [修复记录](docs/audit-fixes-2026-10-20.md)。
+> - **验证状态（2026-10-20 第三轮）**：Linux / Python 3.11.2 / uv 0.13.3，锁定依赖安装成功；259 项测试、20 条确定性评估、23 个实验脚本通过。真实本地 API + Streamlit 交互及三进程恢复已验证；真实模型、真实 embedding 与 Windows 本地执行未验证。详见 [验证记录](docs/verification.md) 与 [修复记录](docs/audit-fixes-2026-10-20.md)。
 > - 最可靠的验收方式仍然是：你在自己的机器上按 [ops-assistant/README.md](ops-assistant/README.md) 跑一遍，并对照 [docs/verification.md](docs/verification.md) 记录结果。
 
 ---
@@ -126,7 +126,7 @@ ops-assistant/
 | FastAPI 11 个路由 + Streamlit 前端 + CLI | **已实现** | `api/main.py`、`ui/streamlit_app.py`、`scripts/run_cli.py` |
 | 环境变量与 `.env` 加载、密钥脱敏 | **已实现** | `config.py`、`logging_utils.py` |
 | 代码风格（ruff）与类型注解 | **已实测通过** | `pyproject.toml` 的 `[tool.ruff]` |
-| 单元/集成测试 | **已实测通过** | `tests/`：220 项测试，详见验证环境 |
+| 单元/集成测试 | **已实测通过** | `tests/`：259 项测试，详见验证环境 |
 | 评测集与评分脚本 | **已实测通过** | `eval/cases.jsonl`、`eval/run_eval.py` |
 | 真实 embedding 模型端到端效果 | **未验证**（默认为哈希向量） | `.env.example` 说明与 `knowledge/embeddings.py` 的回退逻辑 |
 | 多实例/多 worker 部署 | **未来计划**（需把检查点与偏好迁到共享后端） | `api/main.py` docstring |

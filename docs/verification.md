@@ -1,8 +1,40 @@
 # 验证记录
 
-## 当前复测：2026-10-20
+## 当前复测：2026-10-20（第三轮）
 
-Linux x86_64，Python 3.12.14、uv 0.12.23；使用仓库 `uv.lock`：LangChain 1.4.6、LangGraph 1.2.16、langchain-openai 1.7.2。以下结果来自本轮真实执行；后面的 2026-10-19 章节保留为历史记录，其计数与接口不代表当前版本。
+Linux x86_64，Python 3.11.2、uv 0.13.3；使用仓库 `uv.lock`：LangChain 1.4.6、LangGraph 1.2.16、langchain-openai 1.7.2、langchain-text-splitters 1.1.3、langgraph-checkpoint-sqlite 3.1.2；ruff 0.17.1、pytest 8.4.2。以下结果来自本轮真实执行。本轮起点是"全套验证已经全绿"，因此缺陷不是靠跑既有命令发现的，而是靠对解析层与导出层做对抗性输入探测发现的，明细见 [修复记录](audit-fixes-2026-10-20.md) 第三轮章节。
+
+| 验证项 | 本轮结果 |
+| --- | --- |
+| `uv sync --locked` | 成功 |
+| `uv run python scripts/bootstrap.py` | 成功：regions=5、products=12、orders=956、refunds=94；索引 chunk_count=23 |
+| `uv run pytest -q` | **259 passed**，含 **83 项**审查回归断言（上轮 220 / 44） |
+| `uv run ruff check .` / compileall | 通过（All checks passed） |
+| `uv run python eval/run_eval.py` | 20/20 状态匹配，异常 0 |
+| `uv run python scripts/verify_recovery.py` | 通过：三个独立进程的待审批恢复、导出、重复审批同路径 |
+| `uv run python scripts/verify_ui.py` | 通过：真实本地 API + Streamlit AppTest |
+| `uv run python scripts/check_model.py` | 退出码 0；未配置密钥时 `enabled=false` 是预期行为 |
+| `教程/实验/*.py` | 23 个脚本全部退出码 0 |
+| CLI 端到端 | `2026 年 9 月各地区销售额是多少？` 正常出报告：本期 2026-09 为 11,107.99 元、上期 2026-08 为 16,846.83 元、差额 -5,738.84 元（修复前该问题被 `未找到地区「月各」` 拦下） |
+| 真实模型 / embedding、Windows 本地、浏览器渲染、CI 远端结果 | 本轮未验证；远端 Actions 结果以 PR 页面为准，不能从配置文件推断 |
+
+本轮修复后的关键复验（均为实测输出，非推演）：
+
+| 复验点 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `今年 9 月比去年 9 月变化多少` | 本期 2026-09 对比 **上期 2026-09**，差额恒为 0 | 本期 2026-09 对比 **上期 2025-09**（11,107.99 vs 17,010.70） |
+| `2026 年 9 月各地区销售额` | `clarification`：未找到地区「月各」 | `awaiting_approval`，dimension=region，正常出报告 |
+| `2026 年 9 月按地区分解` | `clarification`：未找到地区「月按」 | 正常解析，dimension=region |
+| `exported_report_path("t-123", dir)` | `report-t-123.md`（**永不存在**） | `report-t-123-r-9.md`（与 `export_report` 实际产物一致且存在） |
+| `parse_question(123)` | `AttributeError: 'int' object has no attribute 'strip'` | 收敛为澄清，不抛异常 |
+
+复现命令与上一轮相同（见下）。`data/ground_truth.json` 的 `generated_at_utc` 会随 bootstrap 变化，本轮已还原，不纳入提交。
+
+---
+
+## 上一轮复测：2026-10-20（第二轮，历史）
+
+Linux x86_64，Python 3.12.14、uv 0.12.23；使用仓库 `uv.lock`：LangChain 1.4.6、LangGraph 1.2.16、langchain-openai 1.7.2。以下结果来自该轮真实执行；其计数与接口不代表当前版本，后面的 2026-10-19 章节同样保留为历史记录。
 
 | 验证项 | 本轮结果 |
 | --- | --- |
