@@ -1,11 +1,12 @@
-<#
+﻿<#
 .SYNOPSIS
-  一键把本仓库发布到 GitHub：git init → 自检 → 提交 → gh 创建仓库 → push → 验证。
+  一键把本仓库发布到 GitHub：git init → 自检 → 提交 → 创建/关联远程 → push → 验证。
 
 .DESCRIPTION
-  运行前提：
-    1) 已安装 Git for Windows 与 GitHub CLI（gh），并已执行 gh auth login；
-    2) 在仓库根目录（本脚本所在目录）运行。
+  两种模式：
+    A) 有 GitHub CLI（gh）且已登录：自动创建远程仓库并推送。
+    B) 没有 gh（或 gh 不在 PATH）：先在网页上建好空仓库，再用 -RemoteUrl 传入地址，
+       脚本只做 init/自检/提交/关联/推送，不需要 gh。
 
   安全设计：
     - 提交前检查暂存区，若包含 .env / *.db / Academy课程 / 内部笔记等，直接中止；
@@ -18,21 +19,23 @@
   运行方式（在仓库根目录）：
       pwsh -ExecutionPolicy Bypass -File .\publish.ps1 -DryRun
       pwsh -ExecutionPolicy Bypass -File .\publish.ps1 -RepoName langgraph-ops-assistant
+      pwsh -ExecutionPolicy Bypass -File .\publish.ps1 -RemoteUrl https://github.com/you/langgraph-ops-assistant.git
     没有 pwsh（PowerShell 7）时，把命令里的 pwsh 换成 powershell。
 
 .EXAMPLE
   .\publish.ps1 -DryRun
 
 .EXAMPLE
-  .\publish.ps1 -RepoName langgraph-ops-assistant
+  .\publish.ps1 -RemoteUrl https://github.com/yourname/langgraph-ops-assistant.git -DryRun
 
 .EXAMPLE
-  .\publish.ps1 -RepoName langgraph-ops-assistant -Private
+  .\publish.ps1 -RemoteUrl https://github.com/yourname/langgraph-ops-assistant.git
 #>
 [CmdletBinding()]
 param(
     [string]$RepoName = "langgraph-ops-assistant",
     [switch]$Private,
+    [string]$RemoteUrl = "",
     [string]$CommitMessage = "feat: 经营数据分析与知识库智能助手（LangGraph 工作流 + 22 单元教程）",
     [switch]$DryRun
 )
@@ -66,6 +69,11 @@ function Invoke-Plan {
 
 try {
     Write-Host "仓库目录：$repoRoot"
+    if ($RemoteUrl) {
+        Write-Host "远程地址：$RemoteUrl（模式 B：不依赖 gh）"
+    } else {
+        Write-Host "远程地址：由 gh 自动创建（模式 A）"
+    }
 
     # ---------------------------------------------------------------- 1. 工具链
     Write-Step "检查工具链"
@@ -74,24 +82,41 @@ try {
     if (-not $gitCmd) {
         Stop-WithError "未找到 git。请安装 Git for Windows 后重开终端：winget install Git.Git"
     }
-    $ghCmd = Get-Command gh -ErrorAction SilentlyContinue
-    if (-not $ghCmd) {
-        Stop-WithError "未找到 gh。请安装 GitHub CLI 后重开终端：winget install GitHub.cli"
-    }
     Write-Host ("git : {0}" -f $gitCmd.Source)
-    Write-Host ("gh  : {0}" -f $ghCmd.Source)
 
-    Write-Step "检查 gh 登录状态"
-    $authOutput = (& gh auth status 2>&1 | Out-String)
-    if ($LASTEXITCODE -ne 0) {
-        Stop-WithError "gh 尚未登录。请先执行：gh auth login`n$authOutput"
+    $login = ""
+    $userId = ""
+    $ghCmd = Get-Command gh -ErrorAction SilentlyContinue
+
+    if ($RemoteUrl) {
+        # 模式 B：从 URL 里取 owner，仅用于打印与兜底邮箱
+        $match = [regex]::Match($RemoteUrl, 'github\.com[:/](?<owner>[^/]+)/')
+        if ($match.Success) {
+            $login = $match.Groups['owner'].Value
+        }
+    } else {
+        if (-not $ghCmd) {
+            Write-Host ""
+            Write-Host "未找到 gh。可以任选其一：" -ForegroundColor Yellow
+            Write-Host "  1) 安装后重开终端：winget install --id GitHub.cli -e --source winget"
+            Write-Host "  2) 不用 gh：先到 https://github.com/new 建空仓库，再运行"
+            Write-Host "     .\publish.ps1 -RemoteUrl https://github.com/<你的用户名>/<仓库名>.git"
+            Stop-WithError "缺少 gh，且未提供 -RemoteUrl。"
+        }
+        Write-Host ("gh  : {0}" -f $ghCmd.Source)
+
+        Write-Step "检查 gh 登录状态"
+        $authOutput = (& gh auth status 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0) {
+            Stop-WithError "gh 尚未登录。请先执行：gh auth login`n$authOutput"
+        }
+        $login = (& gh api user --jq .login 2>$null | Out-String).Trim()
+        if (-not $login) {
+            Stop-WithError "无法通过 gh api user 获取用户名，请检查网络或代理后重试。"
+        }
+        $userId = (& gh api user --jq .id 2>$null | Out-String).Trim()
+        Write-Host "已登录账号：$login"
     }
-    $login = (& gh api user --jq .login 2>$null | Out-String).Trim()
-    if (-not $login) {
-        Stop-WithError "无法通过 gh api user 获取用户名，请检查网络或代理后重试。"
-    }
-    $userId = (& gh api user --jq .id 2>$null | Out-String).Trim()
-    Write-Host "已登录账号：$login"
 
     # ------------------------------------------------------------ 2. git 身份
     Write-Step "检查 git 提交身份"
@@ -100,24 +125,33 @@ try {
     $gitEmail = (& git config user.email 2>$null | Out-String).Trim()
 
     if (-not $gitName) {
-        if ($DryRun) {
-            Invoke-Plan "git config user.name $login"
+        if ($login) {
+            if ($DryRun) {
+                Invoke-Plan "git config user.name $login"
+            } else {
+                & git config user.name $login
+                Write-Host "已设置 user.name = $login（本仓库级）"
+            }
         } else {
-            & git config user.name $login
-            Write-Host "已设置 user.name = $login（本仓库级）"
+            Stop-WithError "git 未配置 user.name，且无法推断 GitHub 用户名。请先执行：git config --global user.name `"你的名字`""
         }
     }
     if (-not $gitEmail) {
         if ($userId) {
             $fallbackEmail = "$userId+$login@users.noreply.github.com"
-        } else {
+        } elseif ($login) {
             $fallbackEmail = "$login@users.noreply.github.com"
+        } else {
+            $fallbackEmail = ""
+        }
+        if (-not $fallbackEmail) {
+            Stop-WithError "git 未配置 user.email。请先执行：git config --global user.email `"你的邮箱`""
         }
         if ($DryRun) {
             Invoke-Plan "git config user.email $fallbackEmail"
         } else {
             & git config user.email $fallbackEmail
-            Write-Host "已设置 user.email = $fallbackEmail（GitHub 匿名邮箱，不会暴露真实邮箱）"
+            Write-Host "已设置 user.email = $fallbackEmail（GitHub 匿名邮箱，不暴露真实邮箱）"
         }
     }
 
@@ -194,8 +228,8 @@ try {
         }
     }
 
-    # -------------------------------------------------------- 6. 创建并推送
-    Write-Step "创建远程仓库并推送"
+    # -------------------------------------------------------- 6. 关联并推送
+    Write-Step "关联远程仓库并推送"
 
     $hasOrigin = $false
     & git remote get-url origin 2>$null | Out-Null
@@ -203,8 +237,31 @@ try {
         $hasOrigin = $true
     }
 
-    if ($hasOrigin) {
-        Write-Host "已存在 remote origin，直接推送"
+    if ($RemoteUrl) {
+        if ($hasOrigin) {
+            Write-Host "已存在 origin，更新为 $RemoteUrl"
+            if ($DryRun) {
+                Invoke-Plan "git remote set-url origin $RemoteUrl"
+            } else {
+                & git remote set-url origin $RemoteUrl
+            }
+        } else {
+            if ($DryRun) {
+                Invoke-Plan "git remote add origin $RemoteUrl"
+            } else {
+                & git remote add origin $RemoteUrl
+            }
+        }
+        if ($DryRun) {
+            Invoke-Plan "git push -u origin main"
+        } else {
+            & git push -u origin main
+            if ($LASTEXITCODE -ne 0) {
+                Stop-WithError "git push 失败。常见原因：① 远程仓库不是空的（先 git pull --rebase origin main）② 认证失败（用 PAT 或先登录 Git Credential Manager）。"
+            }
+        }
+    } elseif ($hasOrigin) {
+        Write-Host "已存在 origin，直接推送"
         if ($DryRun) {
             Invoke-Plan "git push -u origin main"
         } else {
@@ -224,10 +281,10 @@ try {
         } else {
             & gh repo create $RepoName $visibilityFlag --source . --remote origin --push
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "gh repo create 失败。若同名仓库已存在，可手动关联：" -ForegroundColor Yellow
+                Write-Host "gh repo create 失败。若同名仓库已存在，可改用：" -ForegroundColor Yellow
                 Write-Host ("  git remote add origin https://github.com/{0}/{1}.git" -f $login, $RepoName)
                 Write-Host "  git push -u origin main"
-                Stop-WithError "远程创建或推送未完成，请按上面提示处理后重跑本脚本。"
+                Stop-WithError "远程创建或推送未完成。"
             }
         }
     }
@@ -239,9 +296,14 @@ try {
         Write-Host "[dry-run] 未执行任何写操作；去掉 -DryRun 重新运行即可真正发布。"
     } else {
         & git status --short
-        $url = "https://github.com/$login/$RepoName"
         Write-Host ""
-        Write-Host "完成。仓库地址：$url" -ForegroundColor Green
+        if ($login -and $RemoteUrl) {
+            Write-Host ("完成。请在浏览器打开：https://github.com/{0}/{1}" -f $login, $RepoName) -ForegroundColor Green
+        } elseif ($login) {
+            Write-Host ("完成。仓库地址：https://github.com/{0}/{1}" -f $login, $RepoName) -ForegroundColor Green
+        } else {
+            Write-Host "完成。请到 GitHub 上确认仓库内容。" -ForegroundColor Green
+        }
         Write-Host "建议下一步："
         Write-Host "  1) 生成并提交锁文件：cd ops-assistant; uv lock; cd ..; git add ops-assistant/uv.lock; git commit -m 'chore: 提交 uv.lock'; git push"
         Write-Host "  2) 按 docs/verification.md 跑一遍，把真实结果补进仓库"
