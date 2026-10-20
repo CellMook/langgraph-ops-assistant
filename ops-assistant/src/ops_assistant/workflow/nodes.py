@@ -42,7 +42,7 @@ from ops_assistant.observability import (
     get_logger,
     log_structured,
 )
-from ops_assistant.report.export import export_report
+from ops_assistant.report.export import export_report, report_digest
 from ops_assistant.report.format import format_cents, format_pct, render_analysis_report
 from ops_assistant.workflow.state import (
     DEFAULT_DIMENSION,
@@ -361,11 +361,7 @@ def _call_with_supported_kwargs(func: Any, *args: Any, **kwargs: Any) -> Any:
     parameters = list(signature.parameters.values())
     if any(item.kind == item.VAR_KEYWORD for item in parameters):
         return func(*args, **kwargs)
-    allowed = {
-        item.name
-        for item in parameters
-        if item.kind in (item.POSITIONAL_OR_KEYWORD, item.KEYWORD_ONLY)
-    }
+    allowed = {item.name for item in parameters if item.kind in (item.POSITIONAL_OR_KEYWORD, item.KEYWORD_ONLY)}
     return func(*args, **{key: value for key, value in kwargs.items() if key in allowed})
 
 
@@ -396,8 +392,8 @@ class BudgetTracker:
         raw = state.get("budget") or {}
         if not isinstance(raw, dict):
             raw = {}
-        self.max_steps = int(raw.get("max_steps") or getattr(settings, "max_steps", 12) or 12)
-        self.max_tool_calls = int(raw.get("max_tool_calls") or getattr(settings, "max_tool_calls", 8) or 8)
+        self.max_steps = int(raw.get("max_steps", getattr(settings, "max_steps", 12)))
+        self.max_tool_calls = int(raw.get("max_tool_calls", getattr(settings, "max_tool_calls", 8)))
         self.steps = int(raw.get("steps") or 0)
         self.tool_calls = int(raw.get("tool_calls") or 0)
 
@@ -495,7 +491,8 @@ def _guard_tools(
     count: int = 1,
 ) -> dict[str, Any] | None:
     """工具预算守卫：超限时返回失败增量，否则返回 None。"""
-    if budget.spend_tools(count):
+    if budget.has_tool_room(count):
+        budget.spend_tools(count)
         return None
     return _budget_exceeded_update(
         state,
@@ -636,227 +633,90 @@ def _call_answer_from_knowledge(query: str, kb: Any, llm: Any) -> Any:
 
 
 def understand_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> dict[str, Any]:
-    """理解节点：解析问题、维护追问上下文、决定下一步 route。
-
-    读取：``question`` / ``last_spec`` / ``user_id`` / ``budget``。
-    写入：``spec`` / ``route`` / ``clarification`` / ``status`` / ``budget`` / ``trace``，
-    必要时同时写入 ``last_spec``（跨轮保留，供追问使用）。
-
-    规则（规格 5.7）：
-        - 问题缺少时间范围时沿用上一轮的时间范围，并在 trace 记一条
-          ``inherit_period_from_last_turn``；
-        - 问题里出现地区词时覆盖历史地区，没出现则沿用历史地区（记
-          ``inherit_regions_from_last_turn``）；
-        - 带时间措辞但解析不出具体月份（例如只写"九月"）时走澄清，不猜年份。
-    """
+    """解析意图、应用显式覆盖/继承，再校验；知识问答不依赖销售期间。"""
     deps = _resolve_deps(runtime)
     started = time.perf_counter()
-    thread_id = str(state.get("thread_id") or "")
     budget, blocked = _guard_step(state, deps, node="understand", started=started)
     if blocked is not None:
-        blocked["route"] = "fail"
-        return blocked
-
+        return {**blocked, "route": "fail"}
     question = str(state.get("question") or "").strip()
-    trace: list[dict[str, Any]] = []
     if not question:
-        trace.append(_entry("understand", "validate_question", False, started, {"reason": "empty"}))
         return {
             "status": "failed",
             "route": "fail",
             "budget": budget.as_dict(),
-            "errors": [
-                "EMPTY_QUESTION: 问题为空，请描述要分析的时间范围与指标，"
-                "例如“2026 年九月销售额比八月变化多少，并按地区分解”。"
-            ],
-            "trace": trace,
+            "errors": ["EMPTY_QUESTION: 问题不能为空。"],
+            "trace": [_entry("understand", "validate_question", False, started)],
         }
-
-    # 元数据只用于解析校验与澄清话术，不占用工具预算（见模块说明第 3 条）
+    preliminary = parse_question(question)
     try:
-        raw_months = list_available_months(deps.conn) or []
-        raw_regions = list_regions(deps.conn) or []
-    except Exception as exc:
-        trace.append(_entry("understand", "load_metadata", False, started, {"error": type(exc).__name__}))
-        return {
-            "status": "failed",
-            "route": "fail",
-            "budget": budget.as_dict(),
-            "errors": [f"METADATA_ERROR: 读取可用月份/地区失败（{type(exc).__name__}），无法解析问题。"],
-            "trace": trace,
-        }
-    months = [str(item) for item in raw_months if str(item).strip()]
-    region_dicts = [_as_dict(item) for item in raw_regions]
-    # 解析层需要 [{"region_id", "region_name"}]（命中后返回 region_id）；
-    # 澄清话术里则展示地区中文名，两者不要混用。
-    region_names = [
-        str(item.get("region_name") or item.get("region_id") or "")
-        for item in region_dicts
-    ]
-    region_names = [name for name in region_names if name]
-    min_month = min(months) if months else None
-    max_month = max(months) if months else None
-
-    try:
-        spec = _call_with_supported_kwargs(
-            parse_question,
-            question,
-            known_regions=region_dicts,
-            min_month=min_month,
-            max_month=max_month,
-        )
-    except Exception as exc:
-        trace.append(_entry("understand", "parse_question", False, started, {"error": type(exc).__name__}))
-        return {
-            "status": "failed",
-            "route": "fail",
-            "budget": budget.as_dict(),
-            "errors": [f"PARSE_ERROR: 问题解析失败（{type(exc).__name__}），请换一种说法再试。"],
-            "trace": trace,
-        }
-    spec_dict = _spec_to_dict(spec)
-    trace.append(
-        _entry(
-            "understand",
-            "parse_question",
-            True,
-            started,
-            {
-                "dimension": spec_dict.get("dimension"),
-                "metric": spec_dict.get("metric"),
-                "current_month": spec_dict.get("current_month"),
-                "regions": spec_dict.get("regions"),
-            },
-        )
-    )
-
-    last_spec = state.get("last_spec")
-    if not isinstance(last_spec, dict):
-        last_spec = None
-    current_month = str(spec_dict.get("current_month") or "").strip()
-    regions_in_spec = [str(item) for item in (spec_dict.get("regions") or []) if str(item).strip()]
-    needs_clarification = bool(spec_dict.get("needs_clarification"))
-
-    if last_spec is not None:
-        if not current_month and not _has_explicit_time(question) and last_spec.get("current_month"):
-            inherited_month = str(last_spec.get("current_month") or "").strip()
-            if LEGAL_MONTH.match(inherited_month):
-                spec_dict["current_month"] = inherited_month
-                spec_dict["previous_month"] = (
-                    str(last_spec.get("previous_month") or "").strip()
-                    or _previous_month_of(inherited_month)
-                )
-                current_month = inherited_month
-                needs_clarification = False
-                trace.append(
-                    _entry(
-                        "understand",
-                        "inherit_period_from_last_turn",
-                        True,
-                        started,
-                        {
-                            "current_month": inherited_month,
-                            "previous_month": spec_dict.get("previous_month"),
-                        },
-                    )
-                )
-        if not regions_in_spec:
-            inherited_regions = [str(item) for item in (last_spec.get("regions") or []) if str(item).strip()]
-            if inherited_regions:
-                spec_dict["regions"] = inherited_regions
-                regions_in_spec = inherited_regions
-                trace.append(
-                    _entry(
-                        "understand",
-                        "inherit_regions_from_last_turn",
-                        True,
-                        started,
-                        {"regions": inherited_regions},
-                    )
-                )
-
-    user_id = str(state.get("user_id") or "")
-    prefs_values = _prefs_for_user(deps, user_id, thread_id=thread_id)
-    dimension = str(spec_dict.get("dimension") or "").strip()
-    if dimension not in {"region", "product", "month", "channel"}:
-        spec_dict["dimension"] = str(prefs_values.get("default_dimension") or DEFAULT_DIMENSION)
-        trace.append(
-            _entry(
-                "understand",
-                "apply_dimension_preference",
-                True,
-                started,
-                {"dimension": spec_dict["dimension"]},
-            )
-        )
-
-    wants_comparison = bool(spec_dict.get("wants_comparison", True))
-    previous_month = str(spec_dict.get("previous_month") or "").strip()
-    if current_month and not previous_month and wants_comparison:
-        derived = _previous_month_of(current_month)
-        if derived:
-            spec_dict["previous_month"] = derived
-            previous_month = derived
-            trace.append(
-                _entry(
-                    "understand",
-                    "derive_previous_month",
-                    True,
-                    started,
-                    {"current_month": current_month, "previous_month": derived},
+        if preliminary.intent == "knowledge":
+            spec = _spec_to_dict(preliminary)
+        else:
+            months = list_available_months(deps.conn)
+            spec = _spec_to_dict(
+                parse_question(
+                    question,
+                    known_regions=list_regions(deps.conn),
+                    min_month=min(months) if months else None,
+                    max_month=max(months) if months else None,
                 )
             )
-
-    dimension = str(spec_dict.get("dimension") or "region")
-    route = "data"
-    status = "running"
-    clarification: str | None = None
-    if dimension == "channel":
-        trace.append(
-            _entry("understand", "flag_unsupported_dimension", True, started, {"dimension": "channel"})
-        )
-
-    if needs_clarification or not current_month:
-        route = "clarify"
-        status = "clarification"
-        clarification = str(spec_dict.get("clarification") or "").strip() or _range_hint(
-            min_month, max_month, region_names
-        )
-    elif not LEGAL_MONTH.match(current_month):
-        route = "clarify"
-        status = "clarification"
-        clarification = (
-            f"时间范围“{current_month}”不是合法的年月，请按“2026 年九月”这类说法提问"
-            f"（可用数据范围 {min_month or '未知'} ~ {max_month or '未知'}）。"
-        )
-    elif min_month and max_month and (current_month < min_month or current_month > max_month):
-        route = "clarify"
-        status = "clarification"
-        clarification = f"可用数据范围是 {min_month} ~ {max_month}，您问的 {current_month} 不在范围内，请换一个月份。"
-    elif months and current_month not in months:
-        # 在范围内但该月没有订单：不澄清，交给 data 层用"无记录"口径说明
-        trace.append(_entry("understand", "month_without_records", True, started, {"month": current_month}))
-
-    if route == "data" and KNOWLEDGE_HINTS.search(question):
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "route": "fail",
+            "budget": budget.as_dict(),
+            "errors": [f"METADATA_ERROR: 读取业务元数据失败（{type(exc).__name__}）。"],
+            "trace": [_entry("understand", "load_metadata", False, started)],
+        }
+    trace = [_entry("understand", "parse_question", True, started, dict(spec))]
+    last = state.get("last_spec") or {}
+    if spec.get("intent") != "knowledge" and last:
+        if not spec.get("current_month") and not _has_explicit_time(question):
+            spec["current_month"] = last.get("current_month")
+            spec["previous_month"] = last.get("previous_month")
+            spec["wants_comparison"] = last.get("wants_comparison", False)
+            if spec["current_month"]:
+                spec["time_error"] = None
+                trace.append(_entry("understand", "inherit_period_from_last_turn", True, started))
+        if not spec.get("metric_explicit"):
+            spec["metric"] = last.get("metric", "net_sales")
+        if spec.get("region_action") == "inherit":
+            spec["regions"] = list(last.get("regions") or [])
+            trace.append(_entry("understand", "inherit_regions_from_last_turn", True, started))
+        if spec.get("dimension") == "unknown":
+            spec["dimension"] = last.get("dimension", "unknown")
+    if spec.get("region_action") == "clear":
+        spec["regions"] = []
+    prefs = _prefs_for_user(deps, str(state.get("user_id") or ""), thread_id=str(state.get("thread_id") or ""))
+    if spec.get("dimension") == "unknown":
+        spec["dimension"] = prefs.get("default_dimension", DEFAULT_DIMENSION)
+    reason = spec.get("input_error")
+    if spec.get("intent") == "knowledge":
         route = "knowledge"
-        trace.append(_entry("understand", "route_to_knowledge", True, started, {"reason": "口径类问题"}))
-
-    update: dict[str, Any] = {
-        "spec": spec_dict,
+    else:
+        reason = reason or spec.get("time_error")
+        if not spec.get("current_month"):
+            reason = reason or "请补充要分析的时间范围，例如 2026 年 9 月。"
+        if spec.get("dimension") not in {"region", "unknown"}:
+            reason = reason or f"当前主工作流仅支持按地区分析，尚不支持 {spec['dimension']} 维度。"
+        route = "knowledge" if spec.get("intent") == "mixed" else "data"
+    if reason:
+        route = "clarify"
+    spec["needs_clarification"] = bool(reason)
+    spec["clarification"] = reason
+    update = {
+        "spec": spec,
         "route": route,
-        "status": status,
-        "clarification": clarification,
+        "status": "clarification" if reason else "running",
+        "clarification": reason,
         "budget": budget.as_dict(),
         "trace": trace,
     }
-    if spec_dict.get("current_month") or spec_dict.get("regions"):
-        update["last_spec"] = dict(spec_dict)
+    if not reason and spec.get("current_month"):
+        update["last_spec"] = dict(spec)
     return update
-
-
-# ---------------------------------------------------------------------------
-# 2) clarify 节点
-# ---------------------------------------------------------------------------
 
 
 def clarify_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> dict[str, Any]:
@@ -948,6 +808,18 @@ def knowledge_node(state: AssistantState, runtime: Runtime[AssistantContext]) ->
         )
 
     sources.extend(_doc_sources(citations))
+    if spec.get("intent") == "knowledge":
+        answer_text = policy_context or "现有资料不足以回答，请检查知识库。"
+        return {
+            "policy_context": answer_text,
+            "knowledge_hits": citations,
+            "sources": sources,
+            "status": "answered",
+            "messages": [AIMessage(content=answer_text)],
+            "trace": trace,
+            "errors": errors,
+            "budget": budget.as_dict(),
+        }
     return {
         "policy_context": policy_context,
         "knowledge_hits": citations,
@@ -997,8 +869,7 @@ def data_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> dict
             "data_result": None,
             "budget": budget.as_dict(),
             "errors": [
-                f"INVALID_MONTH: 无法识别的月份“{current_month or '（空）'}”，"
-                "请使用 YYYY-MM 或“2026 年九月”这类说法。"
+                f"INVALID_MONTH: 无法识别的月份“{current_month or '（空）'}”，请使用 YYYY-MM 或“2026 年九月”这类说法。"
             ],
             "trace": trace,
         }
@@ -1020,8 +891,16 @@ def data_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> dict
             node="data",
             params={"current_month": current_month, "previous_month": previous_month},
         ) as span:
-            current = _as_dict(get_month_sales(deps.conn, current_month))
-            previous = _as_dict(get_month_sales(deps.conn, previous_month)) if previous_month else None
+            current = _as_dict(
+                get_month_sales(deps.conn, current_month, region_ids=tuple(spec.get("regions") or []) or None)
+            )
+            previous = (
+                _as_dict(
+                    get_month_sales(deps.conn, previous_month, region_ids=tuple(spec.get("regions") or []) or None)
+                )
+                if previous_month
+                else None
+            )
             span["summary"] = {
                 "current_orders": _opt_int(current.get("order_count")) or 0,
                 "has_previous": previous is not None,
@@ -1056,6 +935,10 @@ def data_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> dict
                 if previous_month
                 else []
             )
+            selected = set(spec.get("regions") or [])
+            if selected:
+                current_regions = [row for row in current_regions if row["region_id"] in selected]
+                previous_regions = [row for row in previous_regions if row["region_id"] in selected]
             span["summary"] = {
                 "current_region_count": len(current_regions),
                 "previous_region_count": len(previous_regions),
@@ -1071,12 +954,9 @@ def data_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> dict
         )
     except sqlite3.Error as exc:
         message = (
-            f"{RETRYABLE_PREFIX}sqlite3.{type(exc).__name__}: 数据查询失败（{exc}）；"
-            "将进入 repair 节点修复并重试一次。"
+            f"{RETRYABLE_PREFIX}sqlite3.{type(exc).__name__}: 数据查询失败（{exc}）；将进入 repair 节点修复并重试一次。"
         )
-        trace.append(
-            _entry("data", "query_failed", False, started, {"error": type(exc).__name__}, retryable=True)
-        )
+        trace.append(_entry("data", "query_failed", False, started, {"error": type(exc).__name__}, retryable=True))
         log_structured(
             event="data.error",
             thread_id=thread_id,
@@ -1092,9 +972,7 @@ def data_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> dict
             "budget": budget.as_dict(),
         }
     except Exception as exc:
-        trace.append(
-            _entry("data", "query_failed", False, started, {"error": type(exc).__name__}, retryable=False)
-        )
+        trace.append(_entry("data", "query_failed", False, started, {"error": type(exc).__name__}, retryable=False))
         return {
             "status": "failed",
             "data_result": None,
@@ -1180,12 +1058,7 @@ def repair_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> di
         return blocked
 
     attempts = (
-        sum(
-            1
-            for item in (state.get("trace") or [])
-            if isinstance(item, dict) and item.get("node") == "repair"
-        )
-        + 1
+        sum(1 for item in (state.get("trace") or []) if isinstance(item, dict) and item.get("node") == "repair") + 1
     )
     trace: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -1318,6 +1191,9 @@ def compute_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> d
 
     trace: list[dict[str, Any]] = []
     errors: list[str] = []
+    blocked = _guard_tools(state, deps, node="compute", started=started, budget=budget)
+    if blocked is not None:
+        return blocked
     try:
         with _tool_span(
             deps.metrics,
@@ -1380,25 +1256,18 @@ def compute_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> d
     metric_base_zero = metric_previous == 0
     metric_pct = None if metric_base_zero else metric_delta / abs(metric_previous)
 
-    reported_delta = _opt_int(getattr(result, "delta_net_cents", None))
-    if reported_delta is not None and reported_delta != delta_net:
-        errors.append(
-            f"COMPUTE_WARNING: 指标层给出的净额差额（{reported_delta} 分）与本节点按净额重算的结果"
-            f"（{delta_net} 分）不一致，报告以重算值为准。"
-        )
-        trace.append(
-            _entry(
-                "compute",
-                "delta_mismatch",
-                True,
-                started,
-                {"metrics": reported_delta, "recomputed": delta_net},
-            )
-        )
+    reported_delta = _opt_int(getattr(result, "delta_cents", None))
+    if reported_delta is not None and reported_delta != metric_delta:
+        return {
+            "status": "failed",
+            "errors": ["RECONCILIATION_ERROR: 指标层与工作流计算不一致，禁止生成报告。"],
+            "budget": budget.as_dict(),
+            "trace": trace,
+        }
 
     for item in region_deltas:
-        if item.get("share_of_delta") is None and delta_net != 0 and item.get("delta_cents") is not None:
-            item["share_of_delta"] = float(item["delta_cents"]) / float(delta_net)
+        if item.get("share_of_delta") is None and metric_delta != 0 and item.get("delta_cents") is not None:
+            item["share_of_delta"] = float(item["delta_cents"]) / float(metric_delta)
     metrics_region_sum = _opt_int(getattr(result, "region_delta_sum_cents", None))
     region_delta_sum = (
         metrics_region_sum
@@ -1438,13 +1307,20 @@ def compute_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> d
     zero_order_previous = [name for name in zero_order_previous if name]
 
     refund_flagged = current_sales.get("has_any_refund_records")
+    if region_deltas and region_delta_sum != metric_delta:
+        return {
+            "status": "failed",
+            "errors": ["RECONCILIATION_ERROR: 指标分解与总差不一致，禁止生成报告。"],
+            "budget": budget.as_dict(),
+            "trace": trace,
+        }
     edge_flags = {
         "current_no_records": (not current_has_orders) and order_count == 0,
-        "true_zero": order_count == 0 and current_gross == 0 and refund_cents == 0 and current_net == 0,
+        "true_zero": order_count > 0 and current_gross > 0 and current_net == 0,
         "previous_no_records": (
             previous_order_count == 0 and previous_net == 0 and not previous_sales.get("has_orders")
         ),
-        "base_zero": base_zero,
+        "base_zero": metric_base_zero,
         "negative_net": current_net < 0 or previous_net < 0,
         "pending_refunds": pending_refund_count,
         # 优先用数据层给出的"是否存在退款记录"（含 pending），拿不到时退回启发式判断
@@ -1454,7 +1330,7 @@ def compute_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> d
         "current_has_orders": current_has_orders,
         "zero_order_regions_current": zero_order_current,
         "zero_order_regions_previous": zero_order_previous,
-        "delta_sum_matches": (region_delta_sum == delta_net) if region_deltas else True,
+        "delta_sum_matches": (region_delta_sum == metric_delta) if region_deltas else True,
     }
 
     tables = [item for item in (state.get("tables") or []) if isinstance(item, dict)]
@@ -1547,6 +1423,7 @@ def compute_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> d
         "metric_current_cents": metric_current,
         "metric_previous_cents": metric_previous,
         "metric_delta_cents": metric_delta,
+        "delta_cents": metric_delta,
         "metric_pct": metric_pct,
         "metric_base_zero": metric_base_zero,
         "delta_net_cents": delta_net,
@@ -1647,21 +1524,15 @@ def _polish_with_llm(deps: _Deps, *, calculation: dict[str, Any], thread_id: str
             error_code=type(exc).__name__,
         )
         return None, [
-            f"LLM_POLISH_SKIPPED: 模型润色失败（{type(exc).__name__}），"
-            "报告已使用纯模板渲染，主体流程不受影响。"
+            f"LLM_POLISH_SKIPPED: 模型润色失败（{type(exc).__name__}），报告已使用纯模板渲染，主体流程不受影响。"
         ]
     polished = str(text or "").strip()
     if not polished:
         return None, []
     if DIGITS.search(polished):
-        return None, [
-            "LLM_POLISH_REJECTED: 模型润色结果包含数字，已整段丢弃；"
-            "报告中所有数字始终由程序注入。"
-        ]
+        return None, ["LLM_POLISH_REJECTED: 模型润色结果包含数字，已整段丢弃；报告中所有数字始终由程序注入。"]
     if any(word in polished for word in CAUSAL_WORDS):
-        return None, [
-            "LLM_POLISH_REJECTED: 模型润色结果包含因果措辞，已整段丢弃，避免把相关性写成因果。"
-        ]
+        return None, ["LLM_POLISH_REJECTED: 模型润色结果包含因果措辞，已整段丢弃，避免把相关性写成因果。"]
     return f"模型润色（仅措辞，未经人工事实核查）：{polished}", []
 
 
@@ -1768,6 +1639,8 @@ def _approval_payload(state: AssistantState, *, thread_id: str) -> dict[str, Any
     return {
         "type": "report_approval",
         "thread_id": thread_id,
+        "report_id": str(state.get("report_id") or ""),
+        "content_hash": report_digest(draft),
         "question": str(state.get("question") or ""),
         "current_month": str(calculation.get("current_month") or ""),
         "previous_month": str(calculation.get("previous_month") or ""),
@@ -1775,8 +1648,7 @@ def _approval_payload(state: AssistantState, *, thread_id: str) -> dict[str, Any
         "options": list(APPROVAL_OPTIONS),
         "report_markdown": draft,
         "instructions": (
-            "请审批本报告：approve 直接导出；edit 提供修改稿后导出（只能改措辞，不能改数字）；"
-            "reject 不导出文件。"
+            "请审批本报告：approve 直接导出；edit 仅允许在原稿末尾追加无数字人工备注；reject 不导出文件。"
         ),
     }
 
@@ -1820,44 +1692,18 @@ def _parse_resume(value: Any) -> tuple[str, str, str]:
     return aliases.get(decision, ""), comment, str(edited or "").strip()
 
 
-def _number_tokens(text: str) -> list[str]:
-    """抽出文本里的数字片段（用于校验"编辑只能改措辞，不能改数字"）。"""
-    return re.findall(r"\d[\d,]*(?:\.\d+)?", str(text or ""))
-
-
 def _edited_report_or_draft(edited: str, draft: str) -> tuple[str, list[str]]:
-    """决定最终导出的报告文本：优先用人工修改稿，但必须通过"数字未变"校验。
-
-    规格 5.8 要求 edit 只能改措辞、不能改数字，因此这里逐个核对原草稿里的
-    数字片段是否仍然出现在修改稿里；只要有一个数字丢失或被改写，就回退原草稿并说明原因。
-
-    参数：
-        edited: 人工提交的修改稿。
-        draft: 程序渲染的原草稿。
-
-    返回：
-        tuple[str, list[str]]：(最终报告文本, 需要写进 errors 的说明)。
-    """
+    """报告正文只读；允许在末尾追加独立的无数字人工备注。"""
     text = str(edited or "").strip()
-    if not text:
-        return draft, ["REVIEW_WARNING: 您选择了编辑但未提供修改稿，将按原始草稿导出。"]
-    draft_tokens = _number_tokens(draft)
-    missing = [token for token in draft_tokens if token not in text]
-    if missing:
-        preview = "、".join(missing[:5])
-        return draft, [
-            "REVIEW_WARNING: 修改稿缺少原报告中的数字（"
-            f"{preview}{'…' if len(missing) > 5 else ''}），为避免数字被改写，已回退为程序渲染的原草稿导出。"
-        ]
-    injected = [token for token in _number_tokens(text) if token not in draft_tokens]
-    if injected:
-        preview = "、".join(injected[:5])
-        return draft, [
-            "REVIEW_WARNING: 修改稿新增了原报告中没有的数字（"
-            f"{preview}{'…' if len(injected) > 5 else ''}），"
-            "为避免把未经计算的数字写进报告，已回退为程序渲染的原草稿导出。"
-        ]
-    return text, []
+    original = draft.rstrip()
+    if not text.startswith(original):
+        return draft, ["INVALID_EDIT: 报告正文、符号、单位与数值归属不可修改；只能追加人工备注。"]
+    note = text[len(original) :].strip()
+    if not note:
+        return original + "\n", []
+    if re.search(r"[0-9０-９一二三四五六七八九十百千万亿%％]|https?://|\[.*?#", note):
+        return draft, ["INVALID_EDIT: 人工备注不可新增数字、比例或引用。"]
+    return original + "\n\n" + note + "\n", []
 
 
 def review_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> dict[str, Any]:
@@ -1893,6 +1739,7 @@ def review_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> di
     resumed_at = time.perf_counter()
 
     decision, comment, edited = _parse_resume(resume_value)
+    approval_id = str(resume_value.get("_interrupt_id") or "") if isinstance(resume_value, dict) else ""
     trace = [
         _entry(
             "review",
@@ -1909,21 +1756,24 @@ def review_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> di
     ]
     errors: list[str] = []
     if decision not in APPROVAL_OPTIONS:
-        errors.append(
-            f"INVALID_DECISION: 无法识别的审批结论“{decision or '（空）'}”，按拒绝处理以免误导出文件。"
-        )
+        errors.append(f"INVALID_DECISION: 无法识别的审批结论“{decision or '（空）'}”，按拒绝处理以免误导出文件。")
         decision = "reject"
 
     decided_at = _now_iso()
     if decision == "reject":
         return {
             "status": "rejected",
-            "review": {"decision": "reject", "comment": comment, "edited_report": "", "decided_at": decided_at},
+            "review": {
+                "decision": "reject",
+                "comment": comment,
+                "edited_report": "",
+                "decided_at": decided_at,
+                "interrupt_id": approval_id,
+            },
             "final_report": "",
             "messages": [
                 AIMessage(
-                    content="已按您的要求拒绝本次报告，未导出任何文件。"
-                    + (f" 备注：{comment}" if comment else "")
+                    content="已按您的要求拒绝本次报告，未导出任何文件。" + (f" 备注：{comment}" if comment else "")
                 )
             ],
             "trace": trace,
@@ -1932,7 +1782,8 @@ def review_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> di
         }
     if decision == "edit":
         final_text, edit_notes = _edited_report_or_draft(edited, draft)
-        errors.extend(edit_notes)
+        if edit_notes:
+            raise ValueError(edit_notes[0])
         # 只有真正采纳了人工修改稿才把它写进 review 记录，回退时该字段留空
         accepted_edit = final_text if final_text != draft else ""
         return {
@@ -1942,6 +1793,7 @@ def review_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> di
                 "comment": comment,
                 "edited_report": accepted_edit,
                 "decided_at": decided_at,
+                "interrupt_id": approval_id,
             },
             "final_report": final_text,
             "messages": [
@@ -1956,13 +1808,15 @@ def review_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> di
         }
     return {
         "status": "approved",
-        "review": {"decision": "approve", "comment": comment, "edited_report": "", "decided_at": decided_at},
+        "review": {
+            "decision": "approve",
+            "comment": comment,
+            "edited_report": "",
+            "decided_at": decided_at,
+            "interrupt_id": approval_id,
+        },
         "final_report": draft,
-        "messages": [
-            AIMessage(
-                content="报告已批准，正在导出文件。" + (f" 备注：{comment}" if comment else "")
-            )
-        ],
+        "messages": [AIMessage(content="报告已批准，正在导出文件。" + (f" 备注：{comment}" if comment else ""))],
         "trace": trace,
         "errors": errors,
         "budget": budget.as_dict(),
@@ -1975,7 +1829,7 @@ def review_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> di
 
 
 def export_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> dict[str, Any]:
-    """导出节点：唯一的落盘节点，文件名固定为 ``report-<thread_id>.md``。
+    """导出节点：唯一的落盘节点，文件名包含 thread_id 与 report_id，不同报告版本分别保存。
 
     写入方式：同目录临时文件 → 写入 → fsync → ``os.replace`` 原子替换，
     因此重复导出永远命中同一路径，也不会出现"半截文件"。
@@ -2029,7 +1883,7 @@ def export_node(state: AssistantState, runtime: Runtime[AssistantContext]) -> di
     try:
         directory = Path(export_dir)
         directory.mkdir(parents=True, exist_ok=True)
-        path = export_report(content, thread_id=thread_id, export_dir=directory)
+        path = export_report(content, thread_id=thread_id, export_dir=directory, report_id=state.get("report_id"))
     except (OSError, ValueError) as exc:
         return {
             "status": "failed",
@@ -2084,10 +1938,7 @@ def fail_node(state: AssistantState) -> dict[str, Any]:
         message = "本轮分析因预算限制提前结束。"
         if errors:
             message += " " + errors[-1]
-        message += (
-            " 建议缩小问题范围（例如只问一个地区或一个指标），"
-            "或调高 OPS_MAX_STEPS / OPS_MAX_TOOL_CALLS 后重试。"
-        )
+        message += " 建议缩小问题范围（例如只问一个地区或一个指标），或调高 OPS_MAX_STEPS / OPS_MAX_TOOL_CALLS 后重试。"
     else:
         message = "本轮分析未能完成。"
         if errors:
@@ -2106,6 +1957,3 @@ def fail_node(state: AssistantState) -> dict[str, Any]:
             )
         ],
     }
-
-
-

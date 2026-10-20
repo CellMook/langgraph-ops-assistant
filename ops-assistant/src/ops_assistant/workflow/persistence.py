@@ -19,13 +19,14 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.types import Command
+from langgraph.types import Command, Overwrite
 
 from ops_assistant.config import Settings, ensure_dirs, load_settings
 from ops_assistant.observability import (
@@ -36,6 +37,7 @@ from ops_assistant.observability import (
     new_request_id,
 )
 from ops_assistant.workflow.graph import build_graph
+from ops_assistant.workflow.nodes import _edited_report_or_draft
 from ops_assistant.workflow.state import (
     DEFAULT_USER_ID,
     PREFERENCE_KEYS,
@@ -396,6 +398,17 @@ class PreferenceStore:
 # ---------------------------------------------------------------------------
 
 
+def _locked_turn(method):
+    """一次业务操作的读/验证/推进/结果快照在同一临界区内完成。"""
+
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self.lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
+
 @dataclass
 class AppRuntime:
     """一个进程内的运行时：连接、知识库、模型、检查点、编译好的图与锁。
@@ -418,7 +431,7 @@ class AppRuntime:
     checkpointer: Any
     graph: Any
     metrics: MetricsCollector = field(default_factory=MetricsCollector)
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    lock: Any = field(default_factory=threading.RLock)
     checkpoint_conn: sqlite3.Connection | None = None
     closed: bool = False
 
@@ -445,9 +458,7 @@ class AppRuntime:
         _call_ensure_dirs(settings)
         root = _project_root()
         data_dir = _settings_path(settings, "data_dir", default=root / "data")
-        db_path = _settings_path(
-            settings, "db_path", "sales_db_path", default=data_dir / "ops.db"
-        )
+        db_path = _settings_path(settings, "db_path", "sales_db_path", default=data_dir / "ops.db")
         checkpoint_path = _settings_path(
             settings,
             "checkpoint_db_path",
@@ -487,7 +498,7 @@ class AppRuntime:
             checkpointer=checkpointer,
             graph=graph,
             metrics=MetricsCollector(),
-            lock=threading.Lock(),
+            lock=threading.RLock(),
             checkpoint_conn=checkpoint_conn,
         )
 
@@ -567,6 +578,7 @@ class AppRuntime:
         }
 
     # -- 对外动作 ---------------------------------------------------------
+    @_locked_turn
     def invoke_turn(
         self,
         question: str,
@@ -591,6 +603,9 @@ class AppRuntime:
         request_id = request_id or new_request_id()
         user_id = str(user_id or DEFAULT_USER_ID)
         started = time.perf_counter()
+        existing = self._get_snapshot(thread_id, user_id)
+        if _extract_interrupt(existing) is not None:
+            raise ValueError("PENDING_APPROVAL: 请先批准、编辑或拒绝当前报告，再开始新一轮。")
         state = initial_state(question, thread_id, user_id, self.settings)
         config = self._config(thread_id, user_id, request_id)
         context = self._context(user_id)
@@ -627,15 +642,17 @@ class AppRuntime:
             duration_ms=elapsed_ms_since(started),
             detail={"status": str((values or {}).get("status") or "")},
         )
-        return self._turn_result(
-            thread_id, values or {}, user_id=user_id, request_id=request_id, started=started
-        )
+        return self._turn_result(thread_id, values or {}, user_id=user_id, request_id=request_id, started=started)
 
+    @_locked_turn
     def resume_turn(
         self,
         thread_id: str,
         decision: str,
         *,
+        interrupt_id: str | None = None,
+        report_id: str | None = None,
+        content_hash: str | None = None,
         comment: str = "",
         edited_report: str = "",
         user_id: str = DEFAULT_USER_ID,
@@ -647,7 +664,7 @@ class AppRuntime:
             thread_id: 会话 id。
             decision: ``approve`` / ``reject`` / ``edit``。
             comment: 审批备注（可选）。
-            edited_report: ``edit`` 时的修改稿（只能改措辞，不能改数字）。
+            edited_report: ``edit`` 时的原稿及末尾无数字备注，正文不可改。
             user_id: 用户 id。
             request_id: 请求追踪 id。
 
@@ -670,16 +687,41 @@ class AppRuntime:
         snapshot = self._get_snapshot(thread_id, user_id)
         pending = _extract_interrupt(snapshot)
         values = dict(getattr(snapshot, "values", None) or {})
+        if report_id is not None and report_id != values.get("report_id"):
+            raise ValueError("STALE_APPROVAL: 报告版本已经变化，请刷新后确认。")
+        current_id = pending["id"] if pending else (values.get("review") or {}).get("interrupt_id")
+        if interrupt_id is not None and interrupt_id != current_id:
+            raise ValueError("STALE_APPROVAL: 审批中断已变化，请刷新后确认。")
+        from ops_assistant.report.export import report_digest
+
+        if content_hash is not None and content_hash != report_digest(str(values.get("draft_report") or "")):
+            raise ValueError("STALE_APPROVAL: 草稿内容已变化。")
+        if decision == "edit":
+            _, edit_errors = _edited_report_or_draft(edited_report, str(values.get("draft_report") or ""))
+            if edit_errors:
+                raise ValueError(edit_errors[0])
         if pending is None:
             # 已经没有待审批的中断：如果是"已批准并导出过"，直接返回同一结果（幂等）
-            if values.get("status") == "approved" and values.get("export_path"):
-                return self._turn_result(
-                    thread_id, values, user_id=user_id, request_id=request_id, started=started
+            if (
+                decision == "approve"
+                and values.get("status") == "failed"
+                and (values.get("review") or {}).get("decision") in {"approve", "edit"}
+                and any(str(e).startswith("EXPORT_ERROR:") for e in values.get("errors", []))
+            ):
+                config = self.graph.update_state(
+                    self._config(thread_id, user_id, request_id),
+                    {"status": "approved", "errors": Overwrite([])},
+                    as_node="review",
                 )
+                values = self.graph.invoke(None, config=config, context=self._context(user_id))
+                return self._turn_result(thread_id, values, user_id=user_id, request_id=request_id, started=started)
+            if decision == "approve" and values.get("status") == "approved" and values.get("export_path"):
+                return self._turn_result(thread_id, values, user_id=user_id, request_id=request_id, started=started)
             raise ValueError("该会话没有待审批的报告：请先调用 /api/chat 生成报告草稿。")
 
         payload = {
             "decision": decision,
+            "_interrupt_id": pending["id"],
             "comment": str(comment or ""),
             "edited_report": str(edited_report or ""),
         }
@@ -710,9 +752,7 @@ class AppRuntime:
             duration_ms=elapsed_ms_since(started),
             detail={"decision": decision},
         )
-        return self._turn_result(
-            thread_id, values or {}, user_id=user_id, request_id=request_id, started=started
-        )
+        return self._turn_result(thread_id, values or {}, user_id=user_id, request_id=request_id, started=started)
 
     def read_thread(
         self,
@@ -746,13 +786,35 @@ class AppRuntime:
         with self.lock:
             threads = self._collect_threads(limit=limit)
         if user_id:
-            filtered = [
-                item
-                for item in threads
-                if not item.get("user_id") or str(item.get("user_id")) == str(user_id)
-            ]
+            filtered = [item for item in threads if not item.get("user_id") or str(item.get("user_id")) == str(user_id)]
             threads = filtered
         return threads[:limit]
+
+    @_locked_turn
+    def list_reports(self, thread_id: str, user_id: str = DEFAULT_USER_ID) -> list[dict[str, Any]]:
+        """列出该会话已经导出的各版本；thread 归属仍由当前状态验证。"""
+        self._get_snapshot(thread_id, user_id)
+        seen = {}
+        for snapshot in self.graph.get_state_history(self._config(thread_id, user_id, new_request_id())):
+            values = snapshot.values
+            report_id = values.get("report_id")
+            if report_id and values.get("status") == "approved" and values.get("export_path"):
+                seen.setdefault(
+                    report_id,
+                    {
+                        "report_id": report_id,
+                        "export_path": values["export_path"],
+                        "question": values.get("question", ""),
+                    },
+                )
+        return list(seen.values())
+
+    @_locked_turn
+    def report_path(self, thread_id: str, report_id: str, user_id: str = DEFAULT_USER_ID) -> str:
+        for item in self.list_reports(thread_id, user_id):
+            if item["report_id"] == report_id:
+                return str(item["export_path"])
+        raise ThreadNotFoundError("报告不存在或尚未批准。")
 
     def health(self) -> dict[str, Any]:
         """健康检查信息（``/api/health`` 与 CLI 共用）。
@@ -772,9 +834,7 @@ class AppRuntime:
             try:
                 data = stats()
                 if isinstance(data, dict):
-                    kb_chunks = int(
-                        data.get("chunk_count") or data.get("chunks") or data.get("total_chunks") or 0
-                    )
+                    kb_chunks = int(data.get("chunk_count") or data.get("chunks") or data.get("total_chunks") or 0)
             except Exception:
                 kb_chunks = 0
         return {
@@ -840,7 +900,11 @@ class AppRuntime:
         config = self._config(thread_id, user_id, new_request_id())
         try:
             with self.lock:
-                return self.graph.get_state(config)
+                snapshot = self.graph.get_state(config)
+                owner = (snapshot.values or {}).get("user_id")
+                if owner and owner != user_id:
+                    raise ThreadNotFoundError("会话不存在或不属于该用户。")
+                return snapshot
         except ThreadNotFoundError:
             raise
         except Exception as exc:
@@ -906,10 +970,7 @@ class AppRuntime:
             snapshot["steps"] = int(budget.get("steps") or 0)
             snapshot["max_steps"] = int(budget.get("max_steps") or self.max_steps)
             snapshot["tool_calls"] = int(budget.get("tool_calls") or 0)
-            snapshot["max_tool_calls"] = int(
-                budget.get("max_tool_calls")
-                or int(getattr(self.settings, "max_tool_calls", 8) or 8)
-            )
+            snapshot["max_tool_calls"] = int(budget.get("max_tool_calls", self.settings.max_tool_calls))
         return snapshot
 
     def _turn_result(
@@ -951,6 +1012,8 @@ class AppRuntime:
         return {
             "thread_id": thread_id,
             "status": status,
+            "report_id": str(values.get("report_id") or ""),
+            "approval_interrupt_id": str((values.get("review") or {}).get("interrupt_id") or ""),
             "answer": _answer_text(values),
             "report": report,
             "clarification": str(values.get("clarification") or ""),

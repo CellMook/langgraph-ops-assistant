@@ -39,7 +39,7 @@ uv run python scripts/run_cli.py --list-threads
 uv run python scripts/run_cli.py --thread-id <thread_id> --resume approve --comment "口径确认"
 ```
 
-讲：`状态：approved`，`导出文件：data/exports/report-<thread_id>.md`；打开文件，内容与屏幕报告一致。
+讲：`状态：approved`，`导出文件：data/exports/report-<thread_id>-<report_id>.md`；打开文件，内容与屏幕报告一致。
 
 ## 3. 多轮追问（约 40 秒）
 

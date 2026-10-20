@@ -150,7 +150,7 @@ class OpenAICompatEmbeddings:
     任何初始化或调用失败都由上层捕获并回退到 HashingEmbeddings。
     """
 
-    def __init__(self, model: str, *, base_url: str | None, api_key: str | None) -> None:
+    def __init__(self, model: str, *, base_url: str | None, api_key: str | None, timeout: float = 60.0) -> None:
         """记录配置，延迟到首次调用才创建 langchain_openai 客户端。
 
         参数：
@@ -166,6 +166,7 @@ class OpenAICompatEmbeddings:
         self.model = model.strip()
         self.base_url = base_url
         self._api_key = api_key
+        self._timeout = timeout
         self._client: Any | None = None
 
     def _get_client(self) -> Any:
@@ -173,7 +174,7 @@ class OpenAICompatEmbeddings:
         if self._client is None:
             from langchain_openai import OpenAIEmbeddings
 
-            kwargs: dict[str, Any] = {"model": self.model}
+            kwargs: dict[str, Any] = {"model": self.model, "request_timeout": self._timeout, "max_retries": 1}
             if self.base_url:
                 kwargs["base_url"] = self.base_url
             if self._api_key:
@@ -250,6 +251,7 @@ def create_embeddings(settings: Settings) -> tuple[Any, dict[str, Any]]:
             model=model_name,
             base_url=settings.embedding_base_url,
             api_key=settings.embedding_api_key,
+            timeout=settings.request_timeout_s,
         )
     except Exception as exc:
         reason = redact_secret(

@@ -50,7 +50,7 @@ LangChain：模型适配（`init_chat_model`）、消息、`@tool`、结构化�
 LangGraph 从节点开头重新执行，`interrupt()` 之前的代码会再跑一遍。所以 `review_node` 之前只做纯读/纯算，落盘放在独立的 `export_node`。
 
 **14. 怎么保证导出幂等？**
-固定文件名 `report-<thread_id>.md`；临时文件 + `os.replace` 原子写；`resume_turn` 发现无待审批且已导出时直接返回既有结果。
+固定文件名 `report-<thread_id>-<report_id>.md`；临时文件 + `os.replace` 原子写；`resume_turn` 发现无待审批且已导出时直接返回既有结果。
 
 **15. `State` / `Checkpointer` / `thread` / `Store` / `Runtime Context` 的区别？**
 State 是图内传递的数据；Checkpointer 持久化图状态；thread 是会话键；Store 是跨会话长期记忆；Runtime Context 是调用时注入的依赖（连接、知识库、模型），不写检查点。
@@ -59,7 +59,7 @@ State 是图内传递的数据；Checkpointer 持久化图状态；thread 是会
 不是。`PreferenceStore` 是 SQLite 鸭子类型适配器（`get/put/search`），只覆盖本项目用到的语义，文档里标为**教学简化**。
 
 **17. 审批"编辑"怎么防止改数字？**
-`_edited_report_or_draft` 校验原报告中的数字是否仍全部存在，并拒绝新增数字；不通过则回退原草稿并写 `REVIEW_WARNING`。它防不住同义改写级别的措辞篡改（已知限制）。
+正文只读，只允许在末尾追加无数字备注；不通过则拒绝编辑并保留待审批，HTTP 返回 422。卡片以 report_id + interrupt_id 绑定当前版本，可附正文 hash；旧卡片返回 409。仅比较数字集合无法防止符号、单位或金额归属被改。
 
 ## D. 数据与检索
 

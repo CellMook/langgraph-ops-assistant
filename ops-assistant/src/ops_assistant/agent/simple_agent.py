@@ -49,17 +49,24 @@ def _build_agent_with_llm(
     llm = build_llm(settings)
     model = llm.get_chat_model(temperature=0.0)
     if model is None:
-        logger.warning(
-            "模型不可用（未配置或初始化失败），simple_agent 返回 None；请使用纯规则 workflow。"
-        )
+        logger.warning("模型不可用（未配置或初始化失败），simple_agent 返回 None；请使用纯规则 workflow。")
         return None, llm
 
     tools = make_tools(conn, kb, settings)
     try:
         # 延迟导入：即使当前 LangChain 版本没有 create_agent，也不影响 agent 包其它模块导入。
         from langchain.agents import create_agent
+        from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitMiddleware
 
-        agent = create_agent(model, tools=tools, system_prompt=SYSTEM_PROMPT)
+        agent = create_agent(
+            model,
+            tools=tools,
+            system_prompt=SYSTEM_PROMPT,
+            middleware=[
+                ToolCallLimitMiddleware(run_limit=settings.max_tool_calls, exit_behavior="continue"),
+                ModelCallLimitMiddleware(run_limit=settings.max_steps, exit_behavior="error"),
+            ],
+        )
     except Exception as exc:
         logger.warning(
             "create_agent 构造失败：%s；simple_agent 返回 None",
@@ -110,11 +117,7 @@ def _collect_sources(
     sources: list[dict[str, Any]],
 ) -> None:
     """把工具结果里的 sources 去重后追加到列表（原地修改）。"""
-    seen = {
-        json.dumps(source, ensure_ascii=False, sort_keys=True)
-        for source in sources
-        if isinstance(source, dict)
-    }
+    seen = {json.dumps(source, ensure_ascii=False, sort_keys=True) for source in sources if isinstance(source, dict)}
     for payload in payloads:
         raw_sources = payload.get("sources")
         if not isinstance(raw_sources, list):
@@ -184,12 +187,16 @@ def run_simple_agent(
         result["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 2)
         return result
 
+    if settings.max_tool_calls <= 0:
+        result.update(
+            status="budget_exceeded", answer="本轮工具预算为 0，未执行模型与工具。", errors=["TOOL_BUDGET_EXCEEDED"]
+        )
+        return result
     agent, llm = _build_agent_with_llm(settings, conn, kb)
     if agent is None:
         result["status"] = "unavailable"
         result["answer"] = (
-            "未配置模型或模型初始化失败：simple_agent 需要真实模型。"
-            "纯规则流程请使用 workflow（无需 API key）。"
+            "未配置模型或模型初始化失败：simple_agent 需要真实模型。纯规则流程请使用 workflow（无需 API key）。"
         )
         result["errors"] = ["MODEL_UNAVAILABLE"]
         result["usage"] = llm.usage()
@@ -205,7 +212,7 @@ def run_simple_agent(
     except Exception as exc:
         message = llm.redact(f"{type(exc).__name__}: {exc}")
         error_name = type(exc).__name__
-        if "Recursion" in error_name or "recursion limit" in str(exc).lower():
+        if "Recursion" in error_name or "Limit" in error_name or "recursion limit" in str(exc).lower():
             result["status"] = "budget_exceeded"
             result["answer"] = (
                 f"简单 Agent 达到步数上限（recursion_limit={recursion_limit}），已终止。"

@@ -1,5 +1,7 @@
 # 单元 16：人工审批：interrupt 与恢复
 
+> **2026-10-20 修订**：本章迷你图只演示 interrupt 生命周期；固定 `report-demo.md` 不具备主项目的版本隔离。主项目 API 必须回传 `report_id` + `interrupt_id`，可附 `content_hash`；无效编辑保持待审批。版本化验收见 [单元 23](23-契约与版本化验收.md)。
+
 > 建议时长：**60 分钟**（概念 15 分钟 + 项目代码 15 分钟 + 实验 20 分钟 + 改坏与边界 10 分钟）
 > 前置：单元 09（Checkpointer、thread 与恢复）、单元 15（多轮记忆、Store 与 Runtime Context）；单元 06/07 的"节点只返回增量"是本节的前提。
 > 可跳过条件：你能说清"`interrupt()` 被调用时图发生了什么、恢复时节点执行了几次、副作用代码应该放在 `interrupt()` 前还是后"，并知道 `Command(resume=...)` 的两种写法——那本单元只需做第 7、8 节。
@@ -17,7 +19,7 @@
 2. **说出"恢复时节点会被重跑"的两个后果**：`interrupt()` 之前的代码会执行第二次；任何有副作用的代码放在 `interrupt()` 之前都会重复发生。
 3. **写出恢复的两种调用方式**：`graph.invoke(Command(resume=...), config=...)` 与项目里的 `runtime.resume_turn(thread_id, decision, ...)` 包装。
 4. **区分 approve / edit / reject 三条分支**：哪条会写文件、哪条只改状态、`status` 分别是什么、`review` 字段长什么样。
-5. **解释"没有待审批就 resume"为什么要报错**：项目抛 `ValueError`（API 层映射为 HTTP 409/400），而不是让图莫名其妙跑一遍。
+5. **解释"没有待审批就 resume"为什么要报错**：项目抛 `ValueError`（API 层映射为 HTTP 409/422），而不是让图莫名其妙跑一遍。
 6. **解释幂等**：同一会话第二次 `approve` 不会重写文件，而是返回第一次的结果（`export_path` 不变）。
 
 前置检查（30 秒）：
@@ -79,7 +81,7 @@ invoke(state)
         ⑦ _parse_resume(resume_value) → decision/comment/edited
         ⑧ 按决策写 review / final_report / status（纯状态更新，无 IO）
         ⑨ route_after_review：approve/edit → export；reject → END
-        ⑩ export 节点：唯一的落盘动作（原子写 report-<thread_id>.md）
+        ⑩ export 节点：唯一的落盘动作（原子写 report-<thread_id>-<report_id>.md）
 ```
 
 ### 3.3 三个必须记住的规则
@@ -104,12 +106,12 @@ payload 会被写进 SQLite 检查点再读回来。所以项目用 `jsonable()`
 
 | 决策 | `status`（review 节点返回） | 是否进 `export` | 文件副作用 | `review` 字段 | 给人看的一句话 |
 | --- | --- | --- | --- | --- | --- |
-| `approve` | `approved` | 是 | 写 `report-<thread_id>.md` | `{"decision":"approve","comment":...,"edited_report":"","decided_at":...}` | "报告已批准，正在导出文件。" |
+| `approve` | `approved` | 是 | 写 `report-<thread_id>-<report_id>.md` | `{"decision":"approve","comment":...,"edited_report":"","decided_at":...}` | "报告已批准，正在导出文件。" |
 | `edit` | `approved` | 是 | 写文件，内容优先用修改稿 | `{"decision":"edit",...,"edited_report": <修改稿或 "">, ...}` | "已收到您的修改稿（或原始草稿），将按其导出报告文件。" |
 | `reject` | `rejected` | 否 | 不写 | `{"decision":"reject","comment":...,"edited_report":"","decided_at":...}` | "已按您的要求拒绝本次报告，未导出任何文件。" |
 | 无法识别 | 归一成 `reject` | 否 | 不写 | 同上 | 同上，且 `errors` 里多一条 `INVALID_DECISION` |
 
-> **项目设计选择**：`edit` 不是"相信人工"，而是"相信人工但校验数字"——`_edited_report_or_draft()` 会逐个核对原草稿里的数字片段是否仍在修改稿里；少一个就回退原草稿，并在 `errors` 里写 `REVIEW_WARNING`。这是"人工也不能改数字"的底线（规格 5.8）。
+> **项目设计选择**：`edit` 的正文只读，只能追加无数字备注。修改符号、单位、数字归属或删除正文都拒绝；API 返回 422 并保留待审批。仅核对数字集合无法保证语义不变。
 
 ### 3.5 为什么"没有待审批就 resume"必须报错
 
@@ -124,7 +126,7 @@ payload 会被写进 SQLite 检查点再读回来。所以项目用 `jsonable()`
 | 暂停 | `workflow/nodes.py` → `review_node` | 构造 payload、调用 `interrupt(payload)`、恢复后解析决策并写状态 |
 | 载荷构造 | 同文件 → `_approval_payload` / `_review_summary` | 只放 JSON 友好的字段；摘要三行全部来自程序算好的数字 |
 | 恢复值解析 | 同文件 → `_parse_resume` | 别名字典归一；无法识别返回空串 |
-| 修改稿校验 | 同文件 → `_edited_report_or_draft` / `_number_tokens` | "只能改措辞，不能改数字"的落地 |
+| 修改稿校验 | 同文件 → `_edited_report_or_draft` | 正文不可改，末尾追加无数字人工备注 |
 | 路由 | `workflow/routing.py` → `route_after_review` | `approve`/`edit` → `export`；其它 → `END` |
 | 落盘 | `workflow/nodes.py` → `export_node` + `report/export.py` | 唯一写文件的地方；原子写、固定文件名 |
 | 恢复入口 | `workflow/persistence.py` → `AppRuntime.resume_turn` | 校验 decision、检查 pending、`Command(resume=payload)` |
@@ -138,105 +140,17 @@ payload 会被写进 SQLite 检查点再读回来。所以项目用 `jsonable()`
 
 ## 5. 文件、完整代码、配置与命令
 
-### 5.1 项目里真正在跑的五段代码（源码摘录）
+### 5.1 当前生产契约（2026-10-20 修订）
 
-**片段 A：`review_node` 的核心（`nodes.py` 第 1862–1876 行）**
+- review 节点先 interrupt；恢复时从节点开头运行。
+- HTTP 审批必须带当前 `report_id` 和 `interrupt_id`，可附 `content_hash`。过期审批返回 409。
+- 待审批时 `/api/chat` 返回 409，先批准、拒绝或编辑当前草稿。
+- 正文只读；edit 仅允许在末尾追加无数字人工备注。非法编辑返回 422，并保持待审批，不自动批准原稿。
+- 只有 export 写业务产物，文件以 thread_id + report_id 标识；不同报告不覆盖。
+- `resume_turn` 的读取、校验、推进与结果快照由同一 RLock 保护；HTTP 与 CLI 都通过该入口。
+- 导出暂时失败后，对同一已批准 report_id 重试 approve 可以恢复导出，不重新算数或重新生成草稿。
 
-```python
-    draft = str(state.get("draft_report") or "")
-    if not draft.strip():
-        return {
-            "status": "failed",
-            "errors": ["REVIEW_ERROR: 没有可审批的报告草稿，请检查 draft 节点。"],
-            "trace": [_entry("review", "validate_input", False, started, {"has_draft": False})],
-            "budget": budget.as_dict(),
-        }
-
-    payload = jsonable(_approval_payload(state, thread_id=thread_id))
-    waited_ms = elapsed_ms_since(started)
-    resume_value = interrupt(payload)
-    resumed_at = time.perf_counter()
-
-    decision, comment, edited = _parse_resume(resume_value)
-```
-
-> 注意 `waited_ms`：它在 `interrupt()` **之前**算好，恢复后写进 trace（`_entry("review", "approval_decision", ...)`），这样能记录"人审批等了多久"。这是"重跑时变量会重新计算"的一个实际例子——`waited_ms` 在恢复后其实是"重跑开始时算的值"，不等于真实等待时长；项目接受这个近似。
-
-**片段 B：`_parse_resume`（`nodes.py` 第 1799–1810 行）**
-
-```python
-    if isinstance(value, str):
-        return aliases.get(value.strip().lower(), ""), "", ""
-    if not isinstance(value, dict):
-        return "", "", ""
-    decision = str(value.get("decision") or value.get("action") or "").strip().lower()
-    comment = str(value.get("comment") or value.get("feedback") or "").strip()
-    edited = value.get("edited_report")
-    if edited is None:
-        edited = value.get("report_markdown")
-    if isinstance(edited, dict):
-        edited = edited.get("report_markdown")
-    return aliases.get(decision, ""), comment, str(edited or "").strip()
-```
-
-**片段 C：`resume_turn` 的前半段（`persistence.py` 第 633–653 行）**
-
-```python
-        snapshot = self._get_snapshot(thread_id, user_id)
-        pending = _extract_interrupt(snapshot)
-        values = dict(getattr(snapshot, "values", None) or {})
-        if pending is None:
-            # 已经没有待审批的中断：如果是"已批准并导出过"，直接返回同一结果（幂等）
-            if values.get("status") == "approved" and values.get("export_path"):
-                return self._turn_result(
-                    thread_id, values, user_id=user_id, request_id=request_id, started=started
-                )
-            raise ValueError("该会话没有待审批的报告：请先调用 /api/chat 生成报告草稿。")
-
-        payload = {
-            "decision": decision,
-            "comment": str(comment or ""),
-            "edited_report": str(edited_report or ""),
-        }
-        config = self._config(thread_id, user_id, request_id)
-        context = self._context(user_id)
-        try:
-            with self.lock:
-                values = self.graph.invoke(Command(resume=payload), config=config, context=context)
-```
-
-**片段 D：`route_after_review`（`routing.py` 第 98–106 行）**
-
-```python
-    if _status(state) in TERMINAL_STATUSES:
-        return "end"
-    review = state.get("review") or {}
-    if not isinstance(review, dict):
-        return "end"
-    decision = str(review.get("decision") or "").strip().lower()
-    if decision in {"approve", "edit"}:
-        return "export"
-    return "end"
-```
-
-**片段 E：`export_node` 的"选哪份文本 + 原子写"（`nodes.py` 第 1970–1975、1994–1997 行）**
-
-```python
-    review = state.get("review") if isinstance(state.get("review"), dict) else {}
-    decision = str(review.get("decision") or "").strip().lower()
-    draft = str(state.get("draft_report") or "")
-    final = str(state.get("final_report") or draft)
-    edited = str(review.get("edited_report") or "")
-    content = edited if decision == "edit" and edited.strip() else final
-```
-
-```python
-    try:
-        directory = Path(export_dir)
-        directory.mkdir(parents=True, exist_ok=True)
-        path = export_report(content, thread_id=thread_id, export_dir=directory)
-    except (OSError, ValueError) as exc:
-```
+源码：`workflow/nodes.py` 的 review_node/export_node、`workflow/persistence.py` 的 resume_turn。以下实验展示框架中断语义；HTTP 集成示例见单元 19。
 
 ### 5.2 可运行实验：`教程/实验/16_interrupt_resume.py`（完整代码）
 
@@ -306,20 +220,14 @@ class St(TypedDict, total=False):
     errors: Annotated[list[str], operator.add]
 
 
-def number_tokens(text: str) -> list[str]:
-    """抽出数字片段，用于"编辑只能改措辞、不能改数字"的校验。"""
-    return re.findall(r"\d[\d,]*(?:\.\d+)?", str(text or ""))
-
-
 def edited_or_draft(edited: str, draft: str) -> tuple[str, list[str]]:
-    """优先用修改稿，但数字必须齐全，否则回退原草稿并给出说明。"""
+    """正文不可改；只允许追加不含数字的备注。"""
     text = str(edited or "").strip()
-    if not text:
-        return draft, ["REVIEW_WARNING: 未提供修改稿，按原草稿导出。"]
-    missing = [token for token in number_tokens(draft) if token not in text]
-    if missing:
-        preview = "、".join(missing[:5])
-        return draft, [f"REVIEW_WARNING: 修改稿缺少原报告中的数字（{preview}），已回退为原草稿导出。"]
+    if not text.startswith(draft):
+        raise ValueError("正文只读，只能追加人工备注")
+    note = text[len(draft):]
+    if re.search(r"[\d一二三四五六七八九十百千万亿零〇两%％]|https?://|\[来源", note):
+        raise ValueError("备注不能新增数字、百分比、URL 或引用")
     return text, []
 
 
@@ -360,7 +268,7 @@ def review_node(state: St) -> dict[str, Any]:
         "options": list(APPROVAL_OPTIONS),
         "summary": "本期 1,234.00 元 / 上期 1,410.00 元 / 差额 -176.00 元",
         "report_markdown": str(state.get("draft") or ""),
-        "instructions": "approve 导出；edit 提供修改稿后导出（只能改措辞）；reject 不导出。",
+        "instructions": "approve 导出；edit 提供修改稿后导出（正文只读，仅追加无数字备注）；reject 不导出。",
     }
     value = interrupt(payload)
     REPLAYS.append("review:after_interrupt")
@@ -380,7 +288,8 @@ def review_node(state: St) -> dict[str, Any]:
             "errors": errors,
         }
 
-    final, notes = edited_or_draft(edited if decision == "edit" else "", str(state.get("draft") or ""))
+    draft = str(state.get("draft") or "")
+    final, notes = edited_or_draft(edited, draft) if decision == "edit" else (draft, [])
     errors.extend(notes)
     return {
         "decision": decision,
@@ -444,6 +353,9 @@ def resume_mini(graph: Any, config: dict[str, Any], value: Any) -> dict[str, Any
         if values.get("status") == "approved" and values.get("final"):
             return values
         raise ValueError("该会话没有待审批的报告：请先调用 /api/chat 生成报告草稿。")
+    decision, _, edited = parse_resume(value)
+    if decision == "edit":
+        edited_or_draft(edited, str(values.get("draft") or ""))
     graph.invoke(Command(resume=value), config=config)
     return dict(graph.get_state(config).values)
 
@@ -454,7 +366,7 @@ def config_for(thread_id: str) -> dict[str, Any]:
 
 
 def main() -> int:
-    """依次演示：暂停 → approve → reject → edit（采纳/回退）→ 非法值 → 幂等 → 报错。"""
+    """依次演示：暂停 → approve → reject → edit（追加/拒绝）→ 非法值 → 幂等 → 报错。"""
     print("== 单元 16 实验：interrupt 与恢复 ==")
     if OUTPUT_DIR.exists():
         shutil.rmtree(OUTPUT_DIR)
@@ -489,7 +401,7 @@ def main() -> int:
     print("final =", repr(rejected["final"]))
     print("最后执行的是 =", REPLAYS[-1])
 
-    print("\n== 4) resume edit：只改措辞会被采纳 ==")
+    print("\n== 4) resume edit：追加无数字备注会被采纳 ==")
     cfg3 = config_for("t3")
     graph.invoke({"topic": "九月西南净销售额"}, config=cfg3)
     draft3 = str(graph.get_state(cfg3).values["draft"])
@@ -499,15 +411,17 @@ def main() -> int:
     print("errors =", edited_out["errors"])
     print("采纳了修改稿 =", "运营负责人复核" in edited_out["final"])
 
-    print("\n== 5) resume edit：改了数字会被回退 ==")
+    print("\n== 5) resume edit：改了正文会被拒绝 ==")
     cfg4 = config_for("t4")
     graph.invoke({"topic": "九月华南净销售额"}, config=cfg4)
     draft4 = str(graph.get_state(cfg4).values["draft"])
     bad = draft4.replace("1,234.00", "9,999.00")
-    fallback = resume_mini(graph, cfg4, {"decision": "edit", "edited_report": bad})
-    print("status =", fallback["status"])
-    print("errors =", fallback["errors"])
-    print("回退成原草稿 =", "1,234.00" in fallback["final"] and "9,999.00" not in fallback["final"])
+    try:
+        resume_mini(graph, cfg4, {"decision": "edit", "edited_report": bad})
+    except ValueError as exc:
+        print("ValueError:", exc)
+    print("仍待审批 =", bool(extract_interrupt(graph.get_state(cfg4))))
+    assert graph.get_state(cfg4).values["status"] == "awaiting_approval"
 
     print("\n== 6) 无法识别的结论：按拒绝处理 ==")
     cfg5 = config_for("t5")
@@ -554,7 +468,7 @@ uv run python ../教程/实验/16_interrupt_resume.py
 | `value = interrupt(payload)` | `review_node` 第 1873 行 | 第一次执行时**不返回**，图直接停住 |
 | `REPLAYS.append("review:before_interrupt")` 在 interrupt 之前 | 项目用 trace 记录 | 恢复后这一行会再执行一次，`count == 2` |
 | `parse_resume` 别名字典 | `_parse_resume` | `"同意"` 不在别名表里 → 归一成空串 → reject |
-| `edited_or_draft` 的数字校验 | `_edited_report_or_draft` | 改一个数字就整体回退 |
+| `edited_or_draft` 的数字校验 | `_edited_report_or_draft` | 更改正文就拒绝，保留待审批 |
 | `route_after_review` | `routing.route_after_review` | reject 直接 `END`，export 不执行 |
 | `resume_mini` 里的 `pending is None` 分支 | `resume_turn` 第 636–642 行 | 已导出 → 幂等返回；其它 → `ValueError` |
 | `export_node` 里的 `write_text` | `export.export_report` | 只有这一处写文件；真实实现更严格（原子写） |
@@ -571,7 +485,7 @@ uv run python ../教程/实验/16_interrupt_resume.py
   "summary": "本期（2026-09）净销售额：1,234.00 元\n上期（2026-08）净销售额：1,410.00 元\n差额：-176.00 元，变化率：-12.5%",
   "options": ["approve", "reject", "edit"],
   "report_markdown": "# ...（完整草稿）",
-  "instructions": "请审批本报告：approve 直接导出；edit 提供修改稿后导出（只能改措辞，不能改数字）；reject 不导出文件。"
+  "instructions": "请审批本报告：approve 直接导出；edit 提供修改稿后导出（正文只读，只能追加无数字人工备注）；reject 不导出文件。"
 }
 ```
 
@@ -612,10 +526,9 @@ status = approved
 errors = []
 采纳了修改稿 = True
 
-== 5) resume edit：改了数字会被回退 ==
-status = approved
-errors = ['REVIEW_WARNING: 修改稿缺少原报告中的数字（1,234.00），已回退为原草稿导出。']
-回退成原草稿 = True
+== 5) resume edit：改了正文会被拒绝 ==
+ValueError: 正文只读，只能追加人工备注
+仍待审批 = True
 
 == 6) 无法识别的结论：按拒绝处理 ==
 status = rejected
@@ -644,7 +557,7 @@ _output 下的文件 = ['report-demo.md']
 | 对 `interrupt()` 的理解 | "暂停后从下一行继续" | "暂停后从节点开头重跑，interrupt 这次直接返回" |
 | 副作用位置 | 认为放哪都行 | 必须放在 interrupt 之后（或干脆只在 export 里） |
 | reject 的处理 | 以为"拒绝=报错" | 是一个正常终态：`status=rejected`，有中文回复，只是不导出 |
-| edit 的处理 | 以为"人工改的一定采纳" | 数字被改就整体回退，并在 `errors` 里说明 |
+| edit 的处理 | 以为"人工改的一定采纳" | 正文被改就返回错误，并保留待审批 |
 | 重复审批 | 没想过 | 已导出的会话再 resume 会幂等返回，不会重写 |
 
 ---
@@ -717,7 +630,7 @@ _output 下的文件 = ['report-demo.md']
 
 分别用 `"批准"`、`"APPROVED"`、`"ok"`、`"modify"`（配合 `edited_report`）测试 `parse_resume`。
 
-预期现象：`批准`/`APPROVED`/`ok` → approve；`modify` → edit（不带修改稿则回退原稿 + `REVIEW_WARNING`）；`"通过一下"` → 不识别 → reject。**结论**：别名字典是"宽容输入"的边界；超出边界一律降级为最安全的动作（不导出）。
+预期现象：`批准`/`APPROVED`/`ok` → approve；`modify` → edit（不带修改稿会校验失败并保留待审批）；`"通过一下"` → 不识别 → reject。**结论**：别名字典是"宽容输入"的边界；超出边界一律降级为最安全的动作（不导出）。
 
 ---
 
@@ -727,8 +640,8 @@ _output 下的文件 = ['report-demo.md']
 - [ ] 我能说出 `interrupt()` 之前为什么不能写文件、不能调模型、不能写库。
 - [ ] 我能写出 `graph.invoke(Command(resume="approve"), config={"configurable": {"thread_id": ...}})`，并说出缺 `thread_id` 会怎样。
 - [ ] 我能列出 approve / edit / reject 三条分支的 `status`、是否导出、`review` 字段。
-- [ ] 我能解释"编辑稿改了数字为什么会被回退"，并说出校验函数名（`_edited_report_or_draft` / `_number_tokens`）。
-- [ ] 我能解释"没有 pending interrupt 还 resume"的项目行为（`ValueError` → HTTP 409/400）。
+- [ ] 我能解释"编辑稿改了正文为什么会被拒绝"，并说出校验函数名（`_edited_report_or_draft`）。
+- [ ] 我能解释"没有 pending interrupt 还 resume"的项目行为（`ValueError` → HTTP 409/422）。
 - [ ] 我能解释幂等：第二个 approve 为什么返回同一 `export_path` 而不是重写。
 - [ ] 我完成了练习 7.3，并亲眼看到"interrupt 之前写文件"会被写两次。
 - [ ] 我完成了实验 8.2，并看到不可序列化对象让 invoke 失败。

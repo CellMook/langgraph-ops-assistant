@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from ops_assistant.data.queries import (
     MonthSales,
@@ -47,6 +47,11 @@ class ComparisonResult:
     metric: str
     notes: tuple[str, ...]
     unsupported_dimension: str | None
+
+    @property
+    def delta_cents(self) -> int:
+        """所选 metric 的差额；delta_net_cents 是旧接口别名，待迁移。"""
+        return self.delta_net_cents
 
 
 def _metric_value(sales: MonthSales, metric: str) -> int:
@@ -108,20 +113,15 @@ def compare_months(
 
     if normalized_dimension not in ("region",):
         unsupported = normalized_dimension
-        notes.append(
-            "当前差额分解只支持按地区；"
-            f"维度 {normalized_dimension!r} 可以查询明细，但不做差额分解。"
-        )
+        notes.append(f"当前差额分解只支持按地区；维度 {normalized_dimension!r} 可以查询明细，但不做差额分解。")
 
-    current = get_month_sales(conn, current_month)
-    previous = get_month_sales(conn, previous_month)
+    current = get_month_sales(conn, current_month, region_ids=region_ids)
+    previous = get_month_sales(conn, previous_month, region_ids=region_ids)
     current_regions = get_region_breakdown(conn, current_month)
     previous_regions = get_region_breakdown(conn, previous_month)
 
     # 过滤地区后，整月汇总必须重算，保证“地区差额之和 == 总差额”。
     if region_ids:
-        current = _recompute_month(current, current_regions, region_ids)
-        previous = _recompute_month(previous, previous_regions, region_ids)
         current_regions = [item for item in current_regions if item.region_id in region_ids]
         previous_regions = [item for item in previous_regions if item.region_id in region_ids]
 
@@ -183,9 +183,7 @@ def compare_months(
     if base_zero and not any("基期" in note for note in notes):
         notes.append("基期指标为 0，变化率无定义。")
     if unsupported is None and delta != 0 and region_sum != delta:
-        notes.append(
-            f"内部校验异常：地区差额合计 {region_sum} 分与总差额 {delta} 分不一致。"
-        )
+        notes.append(f"内部校验异常：地区差额合计 {region_sum} 分与总差额 {delta} 分不一致。")
 
     return ComparisonResult(
         current=current,
@@ -199,25 +197,4 @@ def compare_months(
         metric=metric,
         notes=tuple(notes),
         unsupported_dimension=unsupported,
-    )
-
-
-def _recompute_month(
-    month_sales: MonthSales,
-    regions: list[RegionSales],
-    region_ids: tuple[str, ...],
-) -> MonthSales:
-    """按地区过滤重算月份汇总。"""
-
-    kept = [item for item in regions if item.region_id in region_ids]
-    gross = sum(item.gross_cents for item in kept)
-    refund = sum(item.refund_cents for item in kept)
-    orders = sum(item.order_count for item in kept)
-    return replace(
-        month_sales,
-        gross_cents=gross,
-        refund_cents=refund,
-        net_cents=gross - refund,
-        order_count=orders,
-        has_orders=orders > 0,
     )

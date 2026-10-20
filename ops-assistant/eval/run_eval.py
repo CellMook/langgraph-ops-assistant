@@ -25,7 +25,9 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import shutil
 import sys
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,9 +46,7 @@ DEFAULT_CASES = Path(__file__).resolve().with_name("cases.jsonl")
 DEFAULT_OUT_DIR = Path(__file__).resolve().with_name("results")
 
 #: 追问类用例的前置问题：先跑一轮主问题，才有 last_spec 可继承。
-PRELUDE_QUESTION = (
-    "2026 年九月销售额比八月变化多少？按地区分解差额，并说明销售额是否扣除了退款。"
-)
+PRELUDE_QUESTION = "2026 年九月销售额比八月变化多少？按地区分解差额，并说明销售额是否扣除了退款。"
 
 
 def load_cases(path: Path) -> list[dict[str, Any]]:
@@ -134,17 +134,23 @@ def _run_case(runtime: AppRuntime, case: dict[str, Any]) -> dict[str, Any]:
         compared_status = turn.get("status") if compare_at_final else status_at_question
         nodes = _nodes_of(turn)
         expected_nodes = [str(item) for item in (case.get("expect_trace_contains") or [])]
+        value_failures = []
+        for path, expected in (case.get("expect_values") or {}).items():
+            actual = turn
+            for key in path.split("."):
+                actual = actual.get(key) if isinstance(actual, dict) else None
+            if actual != expected:
+                value_failures.append({"path": path, "expected": expected, "actual": actual})
         record.update(
             {
+                "value_failures": value_failures,
                 "thread_id": thread_id,
                 "status_at_question": status_at_question,
                 "final_status": turn.get("status"),
                 "flow_applied": flow_applied,
                 "actual_status": compared_status,
                 "status_match": compared_status == case.get("expect_status"),
-                "missing_expected_nodes": [
-                    node for node in expected_nodes if node not in nodes
-                ],
+                "missing_expected_nodes": [node for node in expected_nodes if node not in nodes],
                 "trace_nodes": nodes,
                 "clarification": turn.get("clarification"),
                 "report_chars": len(str(turn.get("report") or "")),
@@ -160,8 +166,16 @@ def _run_case(runtime: AppRuntime, case: dict[str, Any]) -> dict[str, Any]:
             }
         )
     except Exception as exc:  # 记录异常本身也是有价值的评估结果
+        value_failures = []
+        for path, expected in (case.get("expect_values") or {}).items():
+            actual = turn
+            for key in path.split("."):
+                actual = actual.get(key) if isinstance(actual, dict) else None
+            if actual != expected:
+                value_failures.append({"path": path, "expected": expected, "actual": actual})
         record.update(
             {
+                "value_failures": value_failures,
                 "thread_id": thread_id,
                 "actual_status": "EXCEPTION",
                 "status_match": False,
@@ -181,11 +195,12 @@ def run(
     verbose: bool = False,
 ) -> dict[str, Any]:
     """按用例集顺序执行，返回可序列化的评估报告。"""
+    settings = dataclasses.replace(
+        settings, llm_enabled=False, model=None, api_key=None, embedding_model=None, embedding_api_key=None
+    )
     grouped: dict[str, list[dict[str, Any]]] = {}
     for case in cases:
-        key = json.dumps(
-            case.get("settings_override") or {}, sort_keys=True, ensure_ascii=False
-        )
+        key = json.dumps(case.get("settings_override") or {}, sort_keys=True, ensure_ascii=False)
         grouped.setdefault(key, []).append(case)
 
     records: list[dict[str, Any]] = []
@@ -240,6 +255,8 @@ def run(
             "total": len(records),
             "status_matched": matched,
             "status_mismatched": len(records) - matched,
+            "trace_mismatched": sum(bool(item.get("missing_expected_nodes")) for item in records),
+            "value_mismatched": sum(bool(item.get("value_failures")) for item in records),
             "exception_count": sum(1 for item in records if not item.get("ok")),
             "note": "status_matched 仅统计工作流状态是否与用例预期一致，不是准确率。",
         },
@@ -269,14 +286,28 @@ def main(argv: list[str] | None = None) -> int:
         print("错误：用例集为空", file=sys.stderr)
         return 2
 
-    report = run(cases, settings, verbose=args.verbose)
+    with tempfile.TemporaryDirectory(prefix="ops-eval-") as temp:
+        base = Path(temp)
+        data = base / "data"
+        data.mkdir()
+        shutil.copy2(settings.db_path, data / "ops.db")
+        isolated = dataclasses.replace(
+            settings,
+            base_dir=base,
+            data_dir=data,
+            db_path=data / "ops.db",
+            checkpoint_db_path=data / "checkpoints.db",
+            preference_db_path=data / "preferences.db",
+            index_path=data / "index.json",
+            export_dir=data / "exports",
+            log_dir=base / "logs",
+        )
+        report = run(cases, isolated, verbose=args.verbose)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out_path = args.out_dir / f"deterministic-{stamp}.json"
-    out_path.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     summary = report["summary"]
     print(
@@ -286,7 +317,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"结果文件：{out_path}")
     print("提醒：这只覆盖确定性路径；模型行为未评估，不要把它当作“准确率”。")
-    return 0
+    return int(
+        bool(
+            summary["status_mismatched"]
+            or summary["trace_mismatched"]
+            or summary["value_mismatched"]
+            or summary["exception_count"]
+        )
+    )
 
 
 if __name__ == "__main__":

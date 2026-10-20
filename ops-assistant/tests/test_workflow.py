@@ -21,9 +21,7 @@ from typing import Any
 
 from ops_assistant.workflow.persistence import AppRuntime
 
-MAIN_QUESTION = (
-    "2026 年九月销售额比八月变化多少？按地区分解差额，并说明销售额是否扣除了退款。"
-)
+MAIN_QUESTION = "2026 年九月销售额比八月变化多少？按地区分解差额，并说明销售额是否扣除了退款。"
 
 
 def _nodes(turn: dict[str, Any]) -> list[str]:
@@ -74,9 +72,7 @@ def test_t20_sources_include_sql_and_documents(runtime: AppRuntime) -> None:
     assert sources, "报告必须带来源"
     kinds = {str(item.get("type") or item.get("kind") or "") for item in sources}
     assert any("sql" in kind.lower() for kind in kinds), f"缺少 SQL 来源：{kinds}"
-    assert any(
-        word in kind.lower() for kind in kinds for word in ("doc", "knowledge")
-    ), f"缺少文档来源：{kinds}"
+    assert any(word in kind.lower() for kind in kinds for word in ("doc", "knowledge")), f"缺少文档来源：{kinds}"
 
 
 def test_t20_tables_and_chart_payload(runtime: AppRuntime) -> None:
@@ -164,7 +160,7 @@ def test_t21_threads_are_isolated(runtime: AppRuntime) -> None:
     assert approved["status"] == "approved"
     export_path = approved["export_path"]
     assert export_path
-    assert Path(export_path).name == f"report-{first['thread_id']}.md"
+    assert Path(export_path).name == f"report-{first['thread_id']}-{first['report_id']}.md"
 
     # 第二个 thread 仍在等待审批，不受影响
     pending = runtime.read_thread(second["thread_id"])

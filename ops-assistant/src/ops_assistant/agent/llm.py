@@ -131,8 +131,15 @@ class LLMClient:
             self._record_error("导入 init_chat_model 失败", exc)
             return None
 
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = {"timeout": self._settings.request_timeout_s, "max_retries": 1}
         provider = self._settings.model_provider
+        # 兼容端点走已安装的 ChatOpenAI；没有端点时仍要求原生集成包。
+        named_provider, separator, bare_name = model_name.partition(":")
+        if self._settings.base_url and named_provider in {"deepseek", "dashscope", "ollama"} and separator:
+            model_name = "openai:" + bare_name
+            provider = None
+        elif self._settings.base_url and provider in {"deepseek", "dashscope", "ollama"}:
+            provider = "openai"
         if provider and ":" not in model_name:
             kwargs["model_provider"] = provider
         if self._settings.base_url:

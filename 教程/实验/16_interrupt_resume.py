@@ -59,20 +59,14 @@ class St(TypedDict, total=False):
     errors: Annotated[list[str], operator.add]
 
 
-def number_tokens(text: str) -> list[str]:
-    """抽出数字片段，用于"编辑只能改措辞、不能改数字"的校验。"""
-    return re.findall(r"\d[\d,]*(?:\.\d+)?", str(text or ""))
-
-
 def edited_or_draft(edited: str, draft: str) -> tuple[str, list[str]]:
-    """优先用修改稿，但数字必须齐全，否则回退原草稿并给出说明。"""
+    """正文不可改；只允许追加不含数字的备注。"""
     text = str(edited or "").strip()
-    if not text:
-        return draft, ["REVIEW_WARNING: 未提供修改稿，按原草稿导出。"]
-    missing = [token for token in number_tokens(draft) if token not in text]
-    if missing:
-        preview = "、".join(missing[:5])
-        return draft, [f"REVIEW_WARNING: 修改稿缺少原报告中的数字（{preview}），已回退为原草稿导出。"]
+    if not text.startswith(draft):
+        raise ValueError("正文只读，只能追加人工备注")
+    note = text[len(draft) :]
+    if re.search(r"[\d一二三四五六七八九十百千万亿零〇两%％]|https?://|\[来源", note):
+        raise ValueError("备注不能新增数字、百分比、URL 或引用")
     return text, []
 
 
@@ -113,7 +107,7 @@ def review_node(state: St) -> dict[str, Any]:
         "options": list(APPROVAL_OPTIONS),
         "summary": "本期 1,234.00 元 / 上期 1,410.00 元 / 差额 -176.00 元",
         "report_markdown": str(state.get("draft") or ""),
-        "instructions": "approve 导出；edit 提供修改稿后导出（只能改措辞）；reject 不导出。",
+        "instructions": "approve 导出；edit 提供修改稿后导出（正文只读，仅追加无数字备注）；reject 不导出。",
     }
     value = interrupt(payload)
     REPLAYS.append("review:after_interrupt")
@@ -121,7 +115,9 @@ def review_node(state: St) -> dict[str, Any]:
     decision, comment, edited = parse_resume(value)
     errors: list[str] = []
     if decision not in APPROVAL_OPTIONS:
-        errors.append(f"INVALID_DECISION: 无法识别“{decision or '（空）'}”，按拒绝处理以免误导出文件。")
+        errors.append(
+            f"INVALID_DECISION: 无法识别“{decision or '（空）'}”，按拒绝处理以免误导出文件。"
+        )
         decision = "reject"
 
     if decision == "reject":
@@ -133,7 +129,8 @@ def review_node(state: St) -> dict[str, Any]:
             "errors": errors,
         }
 
-    final, notes = edited_or_draft(edited if decision == "edit" else "", str(state.get("draft") or ""))
+    draft = str(state.get("draft") or "")
+    final, notes = edited_or_draft(edited, draft) if decision == "edit" else (draft, [])
     errors.extend(notes)
     return {
         "decision": decision,
@@ -154,7 +151,9 @@ def export_node(state: St) -> dict[str, Any]:
 
 def route_after_review(state: St) -> str:
     """批准或编辑才导出，其它一律结束。"""
-    return "export" if str(state.get("decision") or "") in {"approve", "edit"} else "end"
+    return (
+        "export" if str(state.get("decision") or "") in {"approve", "edit"} else "end"
+    )
 
 
 def build_graph(checkpointer: Any) -> Any:
@@ -165,7 +164,9 @@ def build_graph(checkpointer: Any) -> Any:
     builder.add_node("export", export_node)
     builder.add_edge(START, "draft")
     builder.add_edge("draft", "review")
-    builder.add_conditional_edges("review", route_after_review, {"export": "export", "end": END})
+    builder.add_conditional_edges(
+        "review", route_after_review, {"export": "export", "end": END}
+    )
     builder.add_edge("export", END)
     return builder.compile(checkpointer=checkpointer)
 
@@ -185,7 +186,10 @@ def extract_interrupt(snapshot: Any) -> dict[str, Any] | None:
     first = candidates[0]
     if isinstance(first, dict):
         return {"id": str(first.get("id") or ""), "payload": first.get("value")}
-    return {"id": str(getattr(first, "id", "") or ""), "payload": getattr(first, "value", None)}
+    return {
+        "id": str(getattr(first, "id", "") or ""),
+        "payload": getattr(first, "value", None),
+    }
 
 
 def resume_mini(graph: Any, config: dict[str, Any], value: Any) -> dict[str, Any]:
@@ -197,6 +201,9 @@ def resume_mini(graph: Any, config: dict[str, Any], value: Any) -> dict[str, Any
         if values.get("status") == "approved" and values.get("final"):
             return values
         raise ValueError("该会话没有待审批的报告：请先调用 /api/chat 生成报告草稿。")
+    decision, _, edited = parse_resume(value)
+    if decision == "edit":
+        edited_or_draft(edited, str(values.get("draft") or ""))
     graph.invoke(Command(resume=value), config=config)
     return dict(graph.get_state(config).values)
 
@@ -207,7 +214,7 @@ def config_for(thread_id: str) -> dict[str, Any]:
 
 
 def main() -> int:
-    """依次演示：暂停 → approve → reject → edit（采纳/回退）→ 非法值 → 幂等 → 报错。"""
+    """依次演示：暂停 → approve → reject → edit（追加/拒绝）→ 非法值 → 幂等 → 报错。"""
     print("== 单元 16 实验：interrupt 与恢复 ==")
     if OUTPUT_DIR.exists():
         shutil.rmtree(OUTPUT_DIR)
@@ -224,7 +231,10 @@ def main() -> int:
     print("next =", snap.next)
     print("interrupt.payload.type =", pending["payload"]["type"])
     print("interrupt.payload.options =", pending["payload"]["options"])
-    print("payload 可 JSON 序列化 =", bool(json.dumps(pending["payload"], ensure_ascii=False)))
+    print(
+        "payload 可 JSON 序列化 =",
+        bool(json.dumps(pending["payload"], ensure_ascii=False)),
+    )
     print("REPLAYS =", REPLAYS)
 
     print("\n== 2) resume approve：继续跑 export ==")
@@ -242,25 +252,29 @@ def main() -> int:
     print("final =", repr(rejected["final"]))
     print("最后执行的是 =", REPLAYS[-1])
 
-    print("\n== 4) resume edit：只改措辞会被采纳 ==")
+    print("\n== 4) resume edit：追加无数字备注会被采纳 ==")
     cfg3 = config_for("t3")
     graph.invoke({"topic": "九月西南净销售额"}, config=cfg3)
     draft3 = str(graph.get_state(cfg3).values["draft"])
     edited_ok = draft3 + "\n（本报告已由运营负责人复核）"
-    edited_out = resume_mini(graph, cfg3, {"decision": "edit", "edited_report": edited_ok})
+    edited_out = resume_mini(
+        graph, cfg3, {"decision": "edit", "edited_report": edited_ok}
+    )
     print("status =", edited_out["status"])
     print("errors =", edited_out["errors"])
     print("采纳了修改稿 =", "运营负责人复核" in edited_out["final"])
 
-    print("\n== 5) resume edit：改了数字会被回退 ==")
+    print("\n== 5) resume edit：改了正文会被拒绝 ==")
     cfg4 = config_for("t4")
     graph.invoke({"topic": "九月华南净销售额"}, config=cfg4)
     draft4 = str(graph.get_state(cfg4).values["draft"])
     bad = draft4.replace("1,234.00", "9,999.00")
-    fallback = resume_mini(graph, cfg4, {"decision": "edit", "edited_report": bad})
-    print("status =", fallback["status"])
-    print("errors =", fallback["errors"])
-    print("回退成原草稿 =", "1,234.00" in fallback["final"] and "9,999.00" not in fallback["final"])
+    try:
+        resume_mini(graph, cfg4, {"decision": "edit", "edited_report": bad})
+    except ValueError as exc:
+        print("ValueError:", exc)
+    print("仍待审批 =", bool(extract_interrupt(graph.get_state(cfg4))))
+    assert graph.get_state(cfg4).values["status"] == "awaiting_approval"
 
     print("\n== 6) 无法识别的结论：按拒绝处理 ==")
     cfg5 = config_for("t5")
@@ -282,7 +296,10 @@ def main() -> int:
 
     print("\n== 9) 落盘结果：只有 approve/edit 的两条线程各写了一次 ==")
     print("_output 下的文件 =", sorted(path.name for path in OUTPUT_DIR.iterdir()))
-    print("文件里含人工复核尾注 =", "运营负责人复核" in REPORT_PATH.read_text(encoding="utf-8"))
+    print(
+        "文件里含人工复核尾注 =",
+        "运营负责人复核" in REPORT_PATH.read_text(encoding="utf-8"),
+    )
     return 0
 
 

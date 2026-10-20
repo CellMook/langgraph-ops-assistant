@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Annotated, Any, TypedDict
 
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.graph.message import add_messages
+from langgraph.types import Overwrite
 
 from ops_assistant.agent.llm import LLMClient
 from ops_assistant.config import Settings
@@ -57,7 +58,7 @@ def effective_preferences(values: dict[str, Any] | None) -> dict[str, Any]:
             merged[key] = value
     if merged.get("amount_unit") not in {"元", "万元"}:
         merged["amount_unit"] = DEFAULT_AMOUNT_UNIT
-    if merged.get("default_dimension") not in {"region", "product", "month"}:
+    if merged.get("default_dimension") not in {"region"}:
         merged["default_dimension"] = DEFAULT_DIMENSION
     return merged
 
@@ -103,8 +104,8 @@ class AssistantState(TypedDict, total=False):
     字段与规格 5.6 一致；``total=False`` 表示每个字段都可以缺省（节点按需写入）。
     带 reducer 的字段：
         messages: ``add_messages``，按消息 id 追加；
-        trace: ``operator.add``，逐条累加执行轨迹（跨轮累计）；
-        errors: ``operator.add``，逐条累加错误信息（跨轮累计）。
+        trace: ``operator.add``，轮内累加执行轨迹，新轮用 Overwrite 清空；
+        errors: ``operator.add``，轮内累加错误信息，新轮用 Overwrite 清空。
     """
 
     # --- 对话与身份 ---
@@ -131,6 +132,7 @@ class AssistantState(TypedDict, total=False):
     review: dict[str, Any] | None
     final_report: str | None
     export_path: str | None
+    report_id: str
 
     # --- 可观测性与控制 ---
     trace: Annotated[list[dict[str, Any]], operator.add]
@@ -173,11 +175,13 @@ def initial_state(question: str, thread_id: str, user_id: str, settings: Setting
 
     说明：
         1. 这里显式重置"本轮"字段（spec/sources/tables/review/errors 等），
-           避免上一轮的内容串到本轮；trace 与 errors 是 reducer 字段，传空列表等于不追加。
+           避免上一轮的内容串到本轮；trace 与 errors 用 Overwrite 显式清空，历史仍保留在检查点中。
         2. 不包含 ``last_spec``：它需要跨轮保留在检查点里（见规格 5.7 追问要求）。
     """
-    max_steps = int(getattr(settings, "max_steps", 12) or 12)
-    max_tool_calls = int(getattr(settings, "max_tool_calls", 8) or 8)
+    from uuid import uuid4
+
+    max_steps = int(getattr(settings, "max_steps", 12))
+    max_tool_calls = int(getattr(settings, "max_tool_calls", 8))
     return {
         "messages": [HumanMessage(content=question)],
         "question": question,
@@ -196,8 +200,10 @@ def initial_state(question: str, thread_id: str, user_id: str, settings: Setting
         "review": None,
         "final_report": None,
         "export_path": None,
-        "trace": [],
-        "errors": [],
+        "report_id": uuid4().hex,
+        "approval_interrupt_id": "",
+        "trace": Overwrite([]),
+        "errors": Overwrite([]),
         "budget": {
             "steps": 0,
             "max_steps": max_steps,

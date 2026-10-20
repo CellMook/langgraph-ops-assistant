@@ -2,11 +2,12 @@
 
 写出流程是"临时文件 → fsync → os.replace"：
 同一次导出要么完整成功，要么完全不生效，不会留下半截报告；
-复用同一 thread_id 时永远覆盖并返回同一路径（幂等）。
+同一 thread_id + report_id 复用同内容产物；不同版本分开保存，内容冲突拒绝。
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import tempfile
@@ -35,21 +36,32 @@ def sanitize_thread_id(thread_id: str) -> str:
         return "thread"
     safe = _SAFE_CHARS.sub("_", raw)
     safe = safe.strip("._-") or "thread"
-    return safe[:MAX_NAME_LEN]
+    # 清洗和截断可能把不同原始 ID 映射到相同文件名，附原始值摘要消除碰撞。
+    if safe != raw or len(safe) > MAX_NAME_LEN:
+        return safe[:48] + "-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+    return safe
 
 
-def report_filename(thread_id: str) -> str:
-    """返回报告文件名：``report-<thread_id>.md``。"""
-    return f"report-{sanitize_thread_id(thread_id)}.md"
+def report_filename(thread_id: str, report_id: str | None = None) -> str:
+    """返回版本化报告文件名；report_id 省略仅作旧调用兼容。"""
+    suffix = "-" + sanitize_thread_id(report_id) if report_id else ""
+    return f"report-{sanitize_thread_id(thread_id)}{suffix}.md"
 
 
-def export_report(report_markdown: str, *, thread_id: str, export_dir: str | Path) -> Path:
+def export_report(
+    report_markdown: str,
+    *,
+    thread_id: str,
+    export_dir: str | Path,
+    report_id: str | None = None,
+) -> Path:
     """原子写出一份 Markdown 报告，返回最终文件路径。
 
     参数：
         report_markdown: 报告全文（最终文本，原样写盘，不追加/删改内容）。
-        thread_id: 会话 id，决定文件名 ``report-<thread_id>.md``。
+        thread_id: 会话 id，与 report_id 一起决定版本化文件名。
         export_dir: 导出目录；不存在会自动创建。
+        report_id: 报告版本，主工作流每轮生成，重试保持不变。
 
     返回：
         Path：报告文件的绝对路径；重复调用返回同一路径。
@@ -64,7 +76,11 @@ def export_report(report_markdown: str, *, thread_id: str, export_dir: str | Pat
 
     directory = Path(export_dir).expanduser()
     directory.mkdir(parents=True, exist_ok=True)
-    target = directory / report_filename(thread_id)
+    target = directory / report_filename(thread_id, report_id)
+    if target.exists():
+        if target.read_text(encoding="utf-8") != text:
+            raise ValueError("报告编号已存在且内容不同，禁止覆盖已导出版本。")
+        return target.resolve()
 
     fd = -1
     temp_name = ""
@@ -96,3 +112,8 @@ def export_report(report_markdown: str, *, thread_id: str, export_dir: str | Pat
 def exported_report_path(thread_id: str, export_dir: str | Path) -> Path:
     """在不写文件的前提下，计算某个会话报告的目标路径（供查询/校验用）。"""
     return (Path(export_dir).expanduser() / report_filename(thread_id)).resolve()
+
+
+def report_digest(content: str) -> str:
+    """审批绑定用户所见的完整草稿内容。"""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()

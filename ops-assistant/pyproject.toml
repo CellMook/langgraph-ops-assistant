@@ -11,7 +11,7 @@ dependencies = [
     "langchain-openai==1.7.2",
     "langchain-text-splitters==1.1.3",
     "langgraph-checkpoint-sqlite==3.1.2",
-    # 以下按规格范围安装，具体补丁版本交给学习者机器的 uv.lock 决定
+    # 以下按规格范围安装，具体补丁版本由仓库提交的 uv.lock 固定
     "fastapi>=0.115,<1",
     "uvicorn[standard]>=0.30,<1",
     "streamlit>=1.40,<2",

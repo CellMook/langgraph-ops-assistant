@@ -26,9 +26,7 @@ from fastapi.testclient import TestClient
 from ops_assistant.api.main import app
 from ops_assistant.workflow.persistence import AppRuntime
 
-MAIN_QUESTION = (
-    "2026 年九月销售额比八月变化多少？按地区分解差额，并说明销售额是否扣除了退款。"
-)
+MAIN_QUESTION = "2026 年九月销售额比八月变化多少？按地区分解差额，并说明销售额是否扣除了退款。"
 
 
 @pytest.fixture()
@@ -51,6 +49,18 @@ def _chat(client: TestClient, question: str, thread_id: str | None = None) -> di
     response = client.post("/api/chat", json=payload)
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def _resume(client: TestClient, turn: dict[str, Any], decision: str, **extra: Any):
+    return client.post(
+        f"/api/threads/{turn['thread_id']}/resume",
+        json={
+            "decision": decision,
+            "report_id": turn["report_id"],
+            "interrupt_id": turn["interrupt"]["id"],
+            **extra,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -136,9 +146,7 @@ def test_t23_chat_follow_up_uses_thread_id(client: TestClient) -> None:
     """T23：带上 thread_id 的追问沿用上下文，只保留指定地区。"""
     first = _chat(client, MAIN_QUESTION)
     thread_id = first["thread_id"]
-    assert client.post(
-        f"/api/threads/{thread_id}/resume", json={"decision": "reject"}
-    ).status_code == 200
+    assert _resume(client, first, "reject").status_code == 200
 
     second = _chat(client, "那华东地区呢？", thread_id=thread_id)
     assert second["status"] == "awaiting_approval"
@@ -172,16 +180,14 @@ def test_t23_approve_then_download(client: TestClient) -> None:
     turn = _chat(client, MAIN_QUESTION)
     thread_id = turn["thread_id"]
 
-    resumed = client.post(
-        f"/api/threads/{thread_id}/resume", json={"decision": "approve", "comment": "OK"}
-    )
+    resumed = _resume(client, turn, "approve", comment="OK")
     assert resumed.status_code == 200
     assert resumed.json()["status"] == "approved"
 
     report = client.get(f"/api/threads/{thread_id}/report")
     assert report.status_code == 200
     body = report.json()
-    assert body["filename"] == f"report-{thread_id}.md"
+    assert body["filename"] == f"report-{thread_id}-{turn['report_id']}.md"
     assert "## 结论" in body["markdown"]
 
 
@@ -206,9 +212,7 @@ def test_t23_resume_without_pending_is_conflict(client: TestClient) -> None:
 def test_t23_invalid_decision_is_validation_error(client: TestClient) -> None:
     """T23：decision 只允许三个值，其它值由 Pydantic 拦成 422。"""
     turn = _chat(client, MAIN_QUESTION)
-    response = client.post(
-        f"/api/threads/{turn['thread_id']}/resume", json={"decision": "maybe"}
-    )
+    response = client.post(f"/api/threads/{turn['thread_id']}/resume", json={"decision": "maybe"})
     assert response.status_code == 422
 
 
@@ -216,7 +220,7 @@ def test_t23_reject_does_not_create_report_file(client: TestClient) -> None:
     """T23：拒绝后报告保持不可下载。"""
     turn = _chat(client, MAIN_QUESTION)
     thread_id = turn["thread_id"]
-    resumed = client.post(f"/api/threads/{thread_id}/resume", json={"decision": "reject"})
+    resumed = _resume(client, turn, "reject")
     assert resumed.status_code == 200
     assert resumed.json()["status"] == "rejected"
     assert client.get(f"/api/threads/{thread_id}/report").status_code == 404
@@ -227,10 +231,7 @@ def test_t23_edit_keeps_numbers(client: TestClient) -> None:
     turn = _chat(client, MAIN_QUESTION)
     thread_id = turn["thread_id"]
     edited = turn["report"] + "\n\n> 人工确认：措辞已核对，数字未改动。\n"
-    resumed = client.post(
-        f"/api/threads/{thread_id}/resume",
-        json={"decision": "edit", "edited_report": edited},
-    )
+    resumed = _resume(client, turn, "edit", edited_report=edited)
     assert resumed.status_code == 200
     body = resumed.json()
     assert body["status"] == "approved"
@@ -249,8 +250,6 @@ def test_t23_preferences_roundtrip(client: TestClient) -> None:
     assert initial.status_code == 200
     assert set(initial.json()["prefs"]) >= {"amount_unit", "default_dimension"}
 
-    updated = client.put(
-        "/api/preferences", json={"prefs": {"amount_unit": "万元", "default_dimension": "region"}}
-    )
+    updated = client.put("/api/preferences", json={"prefs": {"amount_unit": "万元", "default_dimension": "region"}})
     assert updated.status_code == 200
     assert updated.json()["prefs"]["amount_unit"] == "万元"

@@ -19,7 +19,7 @@ flowchart TB
         WF[workflow/graph.py 10 节点]
         RT[workflow/persistence.py AppRuntime]
         ST[workflow/state.py AssistantState/Context]
-        RO[workflow/routing.py 三处条件路由]
+        RO[workflow/routing.py 四处条件路由]
     end
 
     subgraph 业务层
@@ -77,7 +77,8 @@ flowchart TD
     U -->|route=data| D[data]
     U -->|route=fail| F[fail]
 
-    K --> D
+    K -->|混合问题| D
+    K -->|纯知识问答 answered| END5([END])
     D -->|ok| P[compute]
     D -->|retryable 且未修复| R[repair]
     D -->|不可重试| F
@@ -91,11 +92,12 @@ flowchart TD
     F --> END4([END])
 ```
 
-三条条件路由（`routing.py`）：
+四处条件路由（`routing.py` 和 `graph.py`）：
 
 | 路由函数 | 判定依据 | 去向 |
 | --- | --- | --- |
 | `route_after_understand` | `status` 是否为终态；`route` 是否在允许集合 | `clarify` / `knowledge` / `data` / `fail` |
+| `graph.py` 的 knowledge 路由 | 纯知识问答已 answered | `end` / `data` |
 | `route_after_data` | 最近一条 `node="data"` 的 trace 的 `ok` / `retryable`；已修复次数 | `compute` / `repair` / `fail` |
 | `route_after_review` | 审批结论（approve/edit → export；reject → 结束） | `export` / `end` |
 
@@ -167,7 +169,7 @@ sequenceDiagram
 
 1. `review_node` 在 `interrupt()` 之前**只做纯读/纯算**，不写文件、不写库；
 2. 恢复时该节点从头重跑，所以副作用必须放在 `export_node`；
-3. `export_node` 用临时文件 + `os.replace`，文件名为 `report-<thread_id>.md`；
+3. `export_node` 用临时文件 + `os.replace`，文件名为 `report-<thread_id>-<report_id>.md`；
 4. 重复 `approve`：`resume_turn` 检测到无待处理中断且已导出，直接返回同一结果（幂等）；
 5. 换进程后仍可恢复的前提是 `SqliteSaver`（`InMemorySaver` 重启即丢）。
 

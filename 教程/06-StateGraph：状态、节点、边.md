@@ -341,7 +341,7 @@ uv run python ../教程/实验/06_state_graph.py
 | --- | --- | --- |
 | `StateGraph(OpsState)` | 声明状态类型 | 忘了 `total=False` 导致必须传全部字段 |
 | `add_node("parse", node_parse)` | 注册节点 | 节点名重复、与 `START`/`END` 同名 |
-| `node_parse(state) -> dict` | 节点读状态、返回补丁 | 返回 `None`（框架会报错） |
+| `node_parse(state) -> dict` | 节点读状态、返回补丁 | 返回 `None` 表示无状态更新；显式 dict 更便于审查 |
 | `add_edge(START, "parse")` | 设入口 | 用字符串 `"__start__"` 手写（易错） |
 | `compile()` | 校验并生成可执行图 | 忘记调用就 `invoke` |
 | `stream(..., "updates")` | 逐步观察 | 误以为返回完整状态 |
@@ -477,7 +477,7 @@ def node_bad(state: OpsState):
     state["status"] = "running"  # 只改不返回
 ```
 
-预期（未在本环境执行）：执行到该节点时报错，提示节点返回值必须是 dict（或类似信息）。
+本版本实测：返回 None 被当成无更新。不要原地修改 state；请返回明确的更新字典，并对最终状态写断言。
 
 **要理解的点**：节点不是“原地修改”，**必须 return 补丁**。就地改 `state` 不会生效（甚至可能污染后续）。
 
@@ -489,7 +489,7 @@ def node_bad(state: OpsState):
 return {"spec": spec, "status": "running", "trace": trace, "unknown_field": 1}
 ```
 
-预期（未在本环境执行）：可能报错“字段不在 State 中”，也可能被忽略——两种行为都要记录。
+本版本普通 TypedDict 示例实测：未知输出键被忽略。拼写错误不一定抛异常，必须用结果断言和类型检查发现。
 
 **要理解的点**：State 声明是契约。写错字段名（`dataResult` vs `data_result`）不会自动报错时非常危险，所以项目里用 `TypedDict` + 单测断言键集合。
 
@@ -497,7 +497,7 @@ return {"spec": spec, "status": "running", "trace": trace, "unknown_field": 1}
 
 删掉 `builder.add_edge("compute", END)`。
 
-预期（未在本环境执行）：`compile()` 可能报“图没有出口/节点不可达”。
+本版本示例实测：无后继节点正常终止。显式连 END 表达终止意图，但不是所有末端都必须手工连接才能编译。
 
 **要理解的点**：编译期检查是你的朋友，别等到运行时才发现图没走完。
 
@@ -505,7 +505,7 @@ return {"spec": spec, "status": "running", "trace": trace, "unknown_field": 1}
 
 对 `"parse"` 调用两次 `add_node`。
 
-预期（未在本环境执行）：可能后者覆盖前者，也可能报重复定义。
+本版本重复 add_node 同名会抛 ValueError；节点名应唯一。
 
 **要理解的点**：节点 id 是图的地址，重名会让“哪段逻辑在跑”变得不可解释。
 

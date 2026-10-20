@@ -92,9 +92,7 @@ def _format_context(hits: list[SearchHit]) -> str:
     """把命中知识块格式化为模型可引用的上下文。"""
     blocks: list[str] = []
     for hit in hits:
-        blocks.append(
-            f"[{hit.chunk.chunk_id}] 标题：{hit.chunk.title}\n{hit.chunk.text}"
-        )
+        blocks.append(f"[{hit.chunk.chunk_id}] 标题：{hit.chunk.title}\n{hit.chunk.text}")
     return "\n\n".join(blocks)
 
 
@@ -118,6 +116,27 @@ def _validate_citations(text: str, hits: list[SearchHit]) -> bool:
         return False
     allowed = {hit.chunk.chunk_id for hit in hits}
     return cited.issubset(allowed)
+
+
+def _validate_extracts(text: str, hits: list[SearchHit]) -> bool:
+    """保守的摘录模式：每条结论必须是其所引原文的连续片段。
+
+    不用另一个不确定模型证明语义忠实；允许的原文也可能有误，仍需管理知识库。
+    """
+    chunks = {hit.chunk.chunk_id: hit.chunk.text for hit in hits}
+
+    def normalize(value: str) -> str:
+        return re.sub(r"[\s`*_。.!！；;：:]", "", value)
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in lines:
+        ids = _CITATION_PATTERN.findall(line)
+        claim = _CITATION_PATTERN.sub("", line)
+        claim = re.sub(r"^\s*(?:[-*]|[0-9]+[.、)])\s*", "", claim)
+        claim = normalize(claim)
+        if not claim or not ids or not any(claim in normalize(chunks.get(ref, "")) for ref in ids):
+            return False
+    return bool(lines)
 
 
 def _llm_rewrite(
@@ -144,17 +163,13 @@ def _llm_rewrite(
 
     context = _format_context(hits)
     system_prompt = (
-        "你是企业知识库问答助手。只能依据用户消息中给出的知识块作答，"
+        "你是企业知识库问答助手。只能逐条摘录用户消息给出的知识块原文作答，不允许自由改写或补充，"
         "不得补充知识块之外的事实、数字或推断。"
         "每个结论后面必须用方括号引用来源块，格式为 [块编号]，例如 [01_指标口径#0]。"
         "如果知识块不足以回答，直接回答“现有资料不足以回答”，并说明缺少什么。"
         "用简体中文回答，保持简洁。"
     )
-    human_prompt = (
-        f"问题：{question}\n\n"
-        f"可引用的知识块：\n{context}\n\n"
-        "请基于上述知识块回答，并逐条给出引用。"
-    )
+    human_prompt = f"问题：{question}\n\n可引用的知识块：\n{context}\n\n请基于上述知识块回答，并逐条给出引用。"
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
 
     try:
@@ -174,8 +189,8 @@ def _llm_rewrite(
     if not text:
         logger.warning("模型返回空文本，回退模板")
         return fallback, "template"
-    if not _validate_citations(text, hits):
-        logger.warning("模型输出引用校验失败，回退模板；输出片段：%s", text[:120])
+    if not _validate_citations(text, hits) or not _validate_extracts(text, hits):
+        logger.warning("模型输出未通过引用与原文摘录校验，回退模板")
         return fallback, "template"
     return text, "llm"
 
@@ -204,10 +219,7 @@ def answer_from_knowledge(
     text = (question or "").strip()
     if not text:
         return KnowledgeAnswer(
-            answer=(
-                "现有资料不足以回答：问题为空。"
-                "请提供具体业务问题，例如“退款是否计入当月销售额？”。"
-            ),
+            answer=("现有资料不足以回答：问题为空。请提供具体业务问题，例如“退款是否计入当月销售额？”。"),
             citations=(),
             hits=(),
             insufficient=True,
