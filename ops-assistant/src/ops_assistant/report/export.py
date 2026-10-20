@@ -109,9 +109,32 @@ def export_report(
     return target.resolve()
 
 
-def exported_report_path(thread_id: str, export_dir: str | Path) -> Path:
-    """在不写文件的前提下，计算某个会话报告的目标路径（供查询/校验用）。"""
-    return (Path(export_dir).expanduser() / report_filename(thread_id)).resolve()
+def exported_report_path(thread_id: str, export_dir: str | Path, report_id: str | None = None) -> Path:
+    """在不写文件的前提下，定位某个会话已导出的报告路径（供查询/校验用）。
+
+    参数：
+        thread_id: 会话 id。
+        export_dir: 导出目录。
+        report_id: 报告版本；已知时直接算出版本化文件名。
+
+    返回：
+        Path：绝对路径。省略 report_id 时返回该会话在目录里最近写入的一个版本；
+        目录里还没有任何版本时回退到无版本文件名（调用方用 ``.exists()`` 判断）。
+
+    说明：
+        ``export_report`` 写出的文件名一定带 report_id，所以这里不能只按 thread_id
+        拼名字——那样返回的路径永远不存在。
+    """
+    directory = Path(export_dir).expanduser()
+    if report_id:
+        return (directory / report_filename(thread_id, report_id)).resolve()
+    if directory.is_dir():
+        prefix = f"report-{sanitize_thread_id(thread_id)}-"
+        versions = [item for item in directory.glob(f"{prefix}*.md") if item.is_file()]
+        if versions:
+            newest = max(versions, key=lambda item: item.stat().st_mtime)
+            return newest.resolve()
+    return (directory / report_filename(thread_id)).resolve()
 
 
 def report_digest(content: str) -> str:

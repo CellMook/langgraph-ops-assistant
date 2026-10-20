@@ -43,6 +43,13 @@ _REGION_PHRASE_RE = re.compile(r"(?P<name>[\u4e00-\u9fa5]{2,4})(?:地区|大区|
 # 明显不是地区名的前缀词，避免把"这个地区"当成未知地区。
 _REGION_STOPWORDS = {"这个", "那个", "哪个", "各个", "每个", "按", "该", "分", "本", "全"}
 
+# 判断"去年/今年"时向前回看的原文窗口（含空白，比较前会先剔除空白）。
+_RELATIVE_PREFIX_WINDOW = 8
+
+# "9 月各地区" 这类表达里，_REGION_PHRASE_RE 会把月份/量词字一起吃进候选词，
+# 这些前导噪声要先剥掉，_REGION_STOPWORDS 的判断才有机会生效。
+_REGION_NOISE_PREFIX_RE = re.compile(r"^[年月日号每各个这那哪几\s]+")
+
 _COMPARISON_WORDS = ("比", "对比", "相比", "变化", "增加", "减少", "下降", "增长", "涨", "跌", "差额")
 _CHART_WORDS = ("图表", "柱状", "趋势图", "可视化", "画个图", "画图")
 _REFUND_DEFINITION_WORDS = ("是否", "扣", "算", "口径", "包含", "扣除", "计入")
@@ -126,6 +133,9 @@ def _match_regions(text: str, known_regions: list[dict] | None) -> tuple[tuple[s
         for match in _REGION_PHRASE_RE.finditer(text):
             candidate = re.split(r"[和与、]", match.group("name"))[-1]
             candidate = re.sub(r"^(?:那|按|看|只看|的)", "", candidate)
+            # "9 月各地区" 的候选词是 "月各"，"9 月按地区分解" 是 "月按"：
+            # 前导的时间/量词字会挡住 stopword 判断，先剥掉再比对。
+            candidate = _REGION_NOISE_PREFIX_RE.sub("", candidate)
             if not candidate or candidate in _REGION_STOPWORDS or candidate in {"各", "每", "所有", "全国"}:
                 continue
             if any(str(item.get("region_name", "")) in candidate for item in ordered):
@@ -160,15 +170,24 @@ def _collect_mentions(
 
     mentions: list[tuple[int, int, int]] = []
     invalid = False
+    # 显式年份锚点只算一次；没有显式年份时以 today 为锚。
+    anchor_match = _YEAR_RE.search(text)
+    year_anchor = int(anchor_match.group("year")) if anchor_match else today.year
     for match in _PERIOD_RE.finditer(text):
         month = _month_from_token(match.group("month"))
         if month is None:
             invalid = True
             continue
         raw_year = match.group("year")
-        prefix = text[max(0, match.start() - 3) : match.start()]
-        year_anchor = int(_YEAR_RE.search(text).group("year")) if _YEAR_RE.search(text) else today.year
-        relative_year = year_anchor - 1 if prefix.endswith("去年") else today.year if prefix.endswith("今年") else None
+        # 前缀要先去掉空白再判断：“比去年 9 月”里的空格会让 endswith("去年") 失效，
+        # 于是“去年同期”被解析成今年同月（本期=上期，差额恒为 0）。
+        prefix = re.sub(r"\s+", "", text[max(0, match.start() - _RELATIVE_PREFIX_WINDOW) : match.start()])
+        if prefix.endswith("去年"):
+            relative_year: int | None = year_anchor - 1
+        elif prefix.endswith("今年"):
+            relative_year = today.year
+        else:
+            relative_year = None
         year = int(raw_year) if raw_year else (relative_year or year_context or 0)
         mentions.append((match.start(), year, month))
 
@@ -198,7 +217,22 @@ def _detect_dimension(text: str) -> str:
         return "product"
     if any(word in text for word in ("按月", "月度趋势", "趋势")):
         return "month"
-    if any(word in text for word in ("按地区", "分地区", "地区分解", "地区明细", "各地区", "大区")):
+    if any(
+        word in text
+        for word in (
+            "按地区",
+            "分地区",
+            "地区分解",
+            "地区明细",
+            "各地区",
+            "每个地区",
+            "各个地区",
+            "大区",
+            "按区域",
+            "分区域",
+            "各区域",
+        )
+    ):
         return "region"
     return "unknown"
 
@@ -237,7 +271,8 @@ def parse_question(
     """
 
     today = today or date.today()
-    raw = text or ""
+    # 契约是“解析失败不抛异常”，因此非字符串输入也要收敛成澄清，而不是 AttributeError。
+    raw = text if isinstance(text, str) else str(text or "")
     stripped = raw.strip()
 
     if not stripped:
