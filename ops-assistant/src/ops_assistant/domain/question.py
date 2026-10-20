@@ -333,9 +333,26 @@ def parse_question(
                 first = _format_month(first_year, first_month)
                 second = _format_month(second_year, second_month)
                 # 区间方向由语言关系决定，不由月份提及顺序决定。
-                forward = bool(re.search(r"到|至", stripped[first_pos:second_pos]))
-                current_month, previous_month = (second, first) if forward else (first, second)
+                between = stripped[first_pos:second_pos]
+                if re.search(r"到|至", between):
+                    # “8 月到 9 月”：区间右端是本期。
+                    current_month, previous_month = second, first
+                elif re.search(r"和|与|跟|以及", between):
+                    # “去年 9 月和今年 9 月对比”：并列连词不表达方向，两个期间是无序对。
+                    # 按时间先后取较晚者为本期，否则本期会落在去年、差额符号与提问意图相反。
+                    # "YYYY-MM" 的字典序即时间序，可直接比较。
+                    current_month, previous_month = max(first, second), min(first, second)
+                else:
+                    # “9 月比 8 月”“9 月相对于去年 9 月”：非对称比较词，先提到的是本期。
+                    current_month, previous_month = first, second
                 wants_comparison = True
+                if current_month == previous_month:
+                    # 自比只会产出差额恒为 0 的报告，看起来像真实结论，必须澄清。
+                    needs_clarification = True
+                    clarification = (
+                        f"两个期间都是 {_month_label(current_month)}，本期与基期相同，无法比较。"
+                        f"请提供两个不同的期间，例如「2026 年 9 月比 8 月」。当前数据范围：{data_range}。"
+                    )
 
         elif len(mentions) == 1:
             _, year, month = mentions[0]

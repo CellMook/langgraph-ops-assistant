@@ -644,3 +644,71 @@ def test_exported_report_path_picks_latest_version(tmp_path):
     second = export_report("# v2", thread_id="t", export_dir=directory, report_id="r2")
     os.utime(second, (second.stat().st_atime + 10, second.stat().st_mtime + 10))
     assert exported_report_path("t", directory) == second
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-20 第四轮：方向语义（F25）与自比澄清（F26）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "question,current,previous",
+    [
+        # 并列连词不表达方向：两个期间是无序对，较晚者是本期。
+        ("去年 9 月和今年 9 月对比", "2026-09", "2025-09"),
+        ("今年 9 月和去年 9 月对比", "2026-09", "2025-09"),
+        ("去年9月和今年9月对比", "2026-09", "2025-09"),
+        ("2025 年 9 月与 2026 年 9 月对比", "2026-09", "2025-09"),
+        ("2026 年 9 月与 2025 年 9 月对比", "2026-09", "2025-09"),
+        ("2026 年 1 月跟 2 月对比", "2026-02", "2026-01"),
+        ("2026 年 9 月以及 8 月销售额对比", "2026-09", "2026-08"),
+    ],
+)
+def test_symmetric_coordinator_uses_chronological_direction(question, current, previous):
+    """“A 和 B 对比”里较晚的期间是本期，否则差额符号与提问意图相反。"""
+    spec = parse(question)
+    assert (spec.current_month, spec.previous_month) == (current, previous)
+    assert spec.needs_clarification is False, spec.clarification
+
+
+@pytest.mark.parametrize(
+    "question,current,previous",
+    [
+        # 非对称比较词：先提到的是本期，方向不因月份早晚被改写。
+        ("2026 年 9 月比 8 月变化多少", "2026-09", "2026-08"),
+        ("2026 年 8 月比 9 月变化多少", "2026-08", "2026-09"),
+        ("2026年9月相对于去年9月销售额变化多少？", "2026-09", "2025-09"),
+        # 区间连接词：右端是本期。
+        ("从2026年8月到9月销售额变化多少？", "2026-09", "2026-08"),
+        ("2026 年 1 月至 9 月销售额", "2026-09", "2026-01"),
+    ],
+)
+def test_asymmetric_comparator_keeps_mention_order(question, current, previous):
+    """“A 比 B”“A 相对于 B”“A 到 B”的方向规则不得被新规则改动。"""
+    spec = parse(question)
+    assert (spec.current_month, spec.previous_month) == (current, previous)
+    assert spec.needs_clarification is False, spec.clarification
+
+
+@pytest.mark.parametrize("question", ["2026 年 9 月和 9 月对比", "2026年9月比9月变化多少", "2026 年 9 月与 9 月对比"])
+def test_self_comparison_must_clarify_instead_of_reporting_zero_delta(question):
+    """本期与基期相同只能产出差额恒为 0 的报告，看起来像真实结论，必须澄清。"""
+    spec = parse(question)
+    assert spec.needs_clarification is True
+    assert spec.current_month == spec.previous_month
+    assert "本期与基期相同" in spec.clarification
+
+
+def test_symmetric_coordinator_report_uses_later_period_as_current(runtime):
+    """端到端：并列说法的报告不得把去年当本期。"""
+    turn = runtime.invoke_turn("2025 年 9 月与 2026 年 9 月销售额对比")
+    assert turn["status"] != "clarification", turn["clarification"]
+    assert (turn["spec"]["current_month"], turn["spec"]["previous_month"]) == ("2026-09", "2025-09")
+    assert "2026-09（本期）对比 2025-09（上期）" in turn["report"]
+
+
+def test_self_comparison_does_not_reach_report(runtime):
+    """端到端：自比不得出报告。"""
+    turn = runtime.invoke_turn("2026 年 9 月和 9 月销售额对比")
+    assert turn["status"] == "clarification", turn["spec"]
+    assert not turn["report"]

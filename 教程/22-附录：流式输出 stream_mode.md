@@ -68,23 +68,60 @@
 
 > **教学简化**：`messages` 与 `custom` 两种模式本单元不展开——前者需要真实模型才有意义，后者适合大型图。先掌握 `updates` + 组合模式，剩下的读官方文档即可平移。
 
-## 4. 在主项目中的位置（以及为什么主线没用它）
+## 4. 在主项目中的位置
 
-**当前状态**：`AppRuntime.invoke_turn / resume_turn` 内部用的是 `graph.invoke`（同步、一次拿到终态）。API 的 `POST /api/chat` 因此是"发出去→等完整 TurnResponse"。
+**当前状态（2026-10-20 起）**：主项目**两条路径都有**，各自服务不同消费者。
 
-**这是项目设计选择，不是能力缺失**，理由：
+| 路径 | 实现 | 用途 |
+| --- | --- | --- |
+| 非流式 | `AppRuntime.invoke_turn / resume_turn` 内部用 `graph.invoke`；`POST /api/chat` 返回完整 `TurnResponse` | Streamlit 界面、评估脚本、所有既有测试。**仍是默认路径** |
+| 流式 | `AppRuntime.stream_turn` 内部用 `graph.stream(..., stream_mode="updates")`；`GET /api/chat/stream`（SSE）；CLI `--stream` | 需要节点级进度反馈的客户端 |
 
-1. 本项目的"慢"不在模型（默认纯规则，整轮 < 100ms 实测），而在 SQLite 查询也是毫秒级——**没有值得流式的等待**，UI 不需要打字机；
-2. 流式会把 API 契约从 JSON 变成 SSE/分块传输，`TurnResponse` 的统一错误结构、Streamlit 的 `st.session_state` 同步都要重做；
+事件契约（`stream_turn` 与 SSE 完全一致，SSE 只是多一层 `event:`/`data:` 封装）：
+
+```
+start      {"event","thread_id","request_id","question"}
+node       {"event","node","update"}        # 每个超级步一帧，node 是真实节点名
+interrupt  {"event","id","payload"}          # 与 TurnResult.interrupt 同构
+final      {"event","turn"}                  # turn 与 POST /api/chat 响应体同构
+error      {"event","code","message","request_id"}
+```
+
+`final` 与 `error` 互斥且一定是最后一帧：消费端只认这两个之一作为终止信号，`node`/`interrupt` 属于过程信息，**丢掉也不影响终态正确性**。这个设计让流式客户端可以复用既有的 `TurnResponse` 处理逻辑。
+
+**为什么非流式仍是默认路径**（这是设计选择，不是能力缺失）：
+
+1. 本项目的"慢"不在模型（默认纯规则，整轮 < 100ms 实测），SQLite 查询也是毫秒级——**没有值得流式的等待**，UI 不需要打字机；
+2. 流式把传输契约从"一个 JSON"变成"一串帧"，错误处理要多一条路径（HTTP 状态码只能在开流前用，开流后只能用 `error` 事件）；
 3. 教学优先级：先讲透"状态机 + 审批"，再讲"传输层优化"。
 
-**如果真要接进去，改三处**（练习 2 会让你动手）：
+**接进主项目时真正踩到的三个坑**（都已写进代码注释与测试）：
+
+1. **`RLock` 按线程归属**。`stream_turn` 在整个流期间持有运行时锁（与 `invoke_turn` 同样的串行化保证：同一时刻只推进一张图）。但 Starlette 的 `StreamingResponse` 消费同步生成器时会在线程池里逐个 `next()`，**相邻两次可能落在不同线程**，释放锁时抛 `RuntimeError: cannot release un-acquired lock`。所以 `/api/chat/stream` 用**单独一个工作线程**（`asyncio.to_thread`）迭代生成器，再经 `asyncio.Queue` 把帧交回事件循环——锁的获取与释放都发生在同一个线程。
+2. **HTTP 状态码只能在开流前用**。SSE 一旦发出 200 与响应头就改不了状态码，所以"待审批"必须在开流前拦成标准 409（为此加了公开方法 `AppRuntime.pending_approval`），参数校验仍是 422，越权 thread 仍是 404。开流之后才发生的竞态只能降级成 `error` 事件——权威拦截仍在 `stream_turn` 内部（锁内完成）。
+3. **客户端断开不等于该中止工作流**。断开后本轮会跑完并写入检查点，避免留下半截状态；只是后续帧不再发送。
+
+**仍未接的一处**：
 
 | 位置 | 改动 |
 | --- | --- |
-| `AppRuntime` | 新增 `stream_turn(question, ...)`：内部把 `graph.invoke` 换成 `yield from graph.stream(..., stream_mode="updates")`，遇到 `__interrupt__` 时停下来 |
-| `api/main.py` | `/api/chat` 增加 `GET /api/chat/stream`（SSE），每个 `updates` 事件包成 `event: node\ndata: {json}\n\n` |
-| `ui/streamlit_app.py` | 用 `st.write_stream` 或 `st.status` 消费 SSE，把节点名映射成中文步骤提示 |
+| `ui/streamlit_app.py` | 用 `st.write_stream` 或 `st.status` 消费 SSE，把节点名映射成中文步骤提示。改造要重做 `st.session_state` 同步，属于练习 2 |
+
+CLI 已可直接看逐帧输出（这就是练习 2 原来的验收标准）：
+
+```bash
+uv run python scripts/run_cli.py -q "2026 年九月销售额比八月变化多少？" --stream
+# · 会话 425f855aeb66
+# · 解析问题（understand）
+# · 检索知识库（knowledge）
+# · 查询经营数据（data）
+# · 计算指标与差额（compute）
+# · 渲染报告草稿（draft）
+# ! 待人工审批：report_approval，可选 approve/reject/edit
+# 之后是与非流式完全一致的结果输出
+
+uv run python scripts/run_cli.py -q "..." --stream --json   # JSONL：每事件一行
+```
 
 ## 5. 文件、完整代码、配置与命令
 
@@ -187,7 +224,7 @@ uv run python ../教程/实验/22_streaming.py
 三个实现细节值得停下来看：
 
 1. `context=context`：主项目的节点依赖全部从 `Runtime[AssistantContext]` 读取（单元 15），`stream` 与 `invoke` 一样接受 `context=`，**不用改任何节点代码**。
-2. `runtime._context(...)` 带下划线是"内部方法"的意思——教学实验里借用装配逻辑可以，生产代码应该给 `AppRuntime` 加一个公开的 `stream_turn`（练习 2）。
+2. `runtime._context(...)` 带下划线是"内部方法"的意思——教学实验里借用装配逻辑可以，生产代码不要这么写：主项目已有公开的 `AppRuntime.stream_turn`，装配细节都封在里面（练习 2 会让你读它）。
 3. 第一次 `stream` 的输入是**状态增量字典**（与 `invoke_turn` 内部喂 `initial_state(...)` 不同——这里为了实验简洁只给了三个字段；图是 `total=False` 的 TypedDict，缺省字段由各节点自兜底）。
 
 ## 6. 预期输出（2026-10-19 实测，退出码 0）
@@ -225,7 +262,10 @@ uv run python ../教程/实验/22_streaming.py
 ## 7. 修改练习
 
 1. **加 `debug` 模式**：把第 1 段改成 `stream_mode="debug"`，数一数 `type` 有几种取值（task / task_result），确认 `step` 从 1 递增。再对照单元 18：把 `understand` 到 `data` 的边改成两条并行边，观察同一 `step` 下两个 `task` 事件的顺序是否稳定（**实测记录**：并行任务事件顺序不保证稳定，这是官方文档明说的"并行分支无顺序保证"）。
-2. **给 `AppRuntime` 加 `stream_turn`（动手改主项目）**：签名 `def stream_turn(self, question, *, thread_id=None, ...) -> Iterator[dict]`；内部先 `yield` 一个 `{"event": "start", ...}`，再转发 `graph.stream(..., stream_mode="updates")` 的每个 chunk，遇到 `__interrupt__` 时 `yield {"event": "interrupt", "payload": ...}` 后 `return`。验收：`for e in runtime.stream_turn(MAIN_QUESTION): print(e)` 能在 CLI 里看到逐步输出。
+2. **`stream_turn` 已在主项目实现——改成读它并扩展**：`AppRuntime.stream_turn(question, *, thread_id=None, user_id=..., request_id=...) -> Iterator[dict]` 已落地，配套 `GET /api/chat/stream`（SSE）与 CLI `--stream`。先跑 `uv run python scripts/run_cli.py -q "..." --stream` 看逐帧输出，再读 `tests/test_streaming.py`。三个动手方向：
+   - **把 Streamlit 接上**（唯一还没接的一处）：用 `st.write_stream` 或 `st.status` 消费 SSE，把 `node` 事件的节点名映射成中文步骤提示。注意 `st.session_state` 的同步要重做——终态仍以 `final` 事件里的 `turn` 为准，不能用 `node` 增量拼；
+   - **加 `stream_mode="updates"` 之外的模式**：把 `stream_turn` 改成接受 `stream_modes` 参数，试 `("updates", "custom")` 组合，观察帧变成 `(mode, chunk)` 二元组后 `node` 事件要怎么解包（第 3 节讲过这个结构）；
+   - **验证线程约束**：`stream_turn` 的 docstring 写明必须在**同一个线程**里迭代到结束（`RLock` 按线程归属）。自己写一个"在两个线程里交替 `next()`"的脚本，看它抛什么错，再回头看 `api/main.py` 里为什么必须用 `asyncio.to_thread` + `asyncio.Queue`。
 3. **改坏它**：把第 3 段的 `Command(resume=...)` 换成重新 `stream({"question": ...}, config=同thread)`。预期：LangGraph 对"已有 interrupt 待处理又给新输入"的行为——记录你的版本实际做了什么（报错/忽略/新起一轮），这正好是面试里"checkpoint 语义"的加分题。
 
 ## 8. 失败与边界实验

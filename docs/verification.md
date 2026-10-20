@@ -1,6 +1,52 @@
 # 验证记录
 
-## 当前复测：2026-10-20（第三轮）
+## 当前复测：2026-10-20（第四轮）
+
+Linux x86_64，Python 3.11.2、uv 0.13.3；使用仓库 `uv.lock`：LangChain 1.4.6、LangGraph 1.2.16、langchain-openai 1.7.2、langchain-text-splitters 1.1.3、langgraph-checkpoint-sqlite 3.1.2；ruff 0.17.1、pytest 8.4.2。本轮做完第三轮留下的三件遗留项（方向语义、流式输出、术语表），明细见 [修复记录](audit-fixes-2026-10-20.md) 第四轮章节。
+
+| 验证项 | 本轮结果 |
+| --- | --- |
+| `uv sync --locked` | 成功 |
+| `uv run python scripts/bootstrap.py` | 成功 |
+| `uv run pytest -q` | **294 passed**（第三轮 259）：`test_audit_regressions.py` 100 项 + 新增 `test_streaming.py` 18 项 |
+| `uv run ruff check .` / compileall | 通过（All checks passed） |
+| `uv run python eval/run_eval.py` | 20/20 状态匹配，异常 0 |
+| `uv run python scripts/verify_recovery.py` | 退出码 0 |
+| `uv run python scripts/verify_ui.py` | 退出码 0 |
+| `教程/实验/*.py` | 23 个脚本全部退出码 0 |
+| CLI `--stream` | 逐节点打印进度后输出与非流式一致的结果；`--stream --json` 输出 JSONL |
+| SSE 真实 TCP | uvicorn 起在 127.0.0.1:8123，`httpx` 流式读取：8 帧按序到达，`content-type: text/event-stream; charset=utf-8` |
+| 逐帧送达（决定性） | 把 `nodes.get_month_sales` 放慢 500ms×2 后：`start` 于 15.6ms、前两个 `node` 帧于 26.8/30.1ms 到达，其余帧在 2434ms 之后——证明不是一次性缓冲 |
+| 真实模型 / embedding、Windows 本地、浏览器 `EventSource`、CI 远端结果 | 本轮未验证；远端 Actions 结果以 PR 页面为准 |
+
+方向语义复验（均为实测解析结果，`today=2026-10-20`）：
+
+| 问题 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `去年 9 月和今年 9 月对比` | 本期 **2025-09** / 上期 2026-09（基期比本期新，差额符号相反） | 本期 **2026-09** / 上期 2025-09 |
+| `2026 年 9 月与 2025 年 9 月对比` | 本期 2026-09（提及顺序恰好正确） | 本期 2026-09（不再依赖提及顺序） |
+| `2026 年 8 月比 9 月变化多少` | 本期 2026-08 | 本期 2026-08（**非对称比较词不改**，无回归） |
+| `2026 年 9 月和 9 月对比` | 出报告，差额恒为 0 | `clarification`：本期与基期相同 |
+
+未验证项如实保留：浏览器原生 `EventSource` 只做了 HTTP 层验证（`httpx` + `TestClient`），没做浏览器内消费；SSE 断线重连与 `Last-Event-ID` 续传未实现也未测试；Streamlit 仍走非流式路径。
+
+复现命令（从 `ops-assistant/` 执行）：
+
+```bash
+uv sync --locked
+uv run python scripts/bootstrap.py
+uv run python -m compileall -q src scripts tests eval ../教程/实验
+uv run pytest -q
+uv run ruff check .
+uv run python eval/run_eval.py
+uv run python scripts/verify_recovery.py
+uv run python scripts/verify_ui.py
+uv run python scripts/run_cli.py -q "2026 年九月销售额比八月变化多少？" --stream
+```
+
+---
+
+## 上一轮复测：2026-10-20（第三轮，历史）
 
 Linux x86_64，Python 3.11.2、uv 0.13.3；使用仓库 `uv.lock`：LangChain 1.4.6、LangGraph 1.2.16、langchain-openai 1.7.2、langchain-text-splitters 1.1.3、langgraph-checkpoint-sqlite 3.1.2；ruff 0.17.1、pytest 8.4.2。以下结果来自本轮真实执行。本轮起点是"全套验证已经全绿"，因此缺陷不是靠跑既有命令发现的，而是靠对解析层与导出层做对抗性输入探测发现的，明细见 [修复记录](audit-fixes-2026-10-20.md) 第三轮章节。
 

@@ -4,7 +4,7 @@
 
 ## 1. 学习目标与前置
 
-1. 看懂 `api/main.py` 的 9 个端点各自负责什么、返回什么状态码；
+1. 看懂 `api/main.py` 的 12 个端点各自负责什么、返回什么状态码；
 2. 能解释为什么"需要澄清"是 **200 + status=clarification**，而不是 HTTP 400；
 3. 会起 API 与 Streamlit，并完成一次"提问 → 审批 → 下载报告"；
 4. 说清 UI 刷新后状态从哪来（不是浏览器缓存，而是 `GET /api/threads/{id}`）；
@@ -49,8 +49,10 @@
 | GET | `/api/threads` | 会话列表（按更新时间倒序） | 200 |
 | GET | `/api/threads/{id}` | 读取会话当前状态（不推进图） | 200 / 404 |
 | POST | `/api/chat` | 跑一轮，直到审批或终态 | 200 / 422 |
+| GET | `/api/chat/stream` | 同上，但以 SSE 逐节点推送进度（详见单元 22） | 200 / 404 / 409 / 422 |
 | POST | `/api/threads/{id}/resume` | 提交审批结论 | 200 / 404 / 409 / 422 |
 | GET | `/api/threads/{id}/report` | 读取已导出 Markdown | 200 / 404 |
+| GET | `/api/threads/{id}/reports` | 列出该会话已导出的各版本 | 200 / 404 |
 | GET/PUT | `/api/preferences` | 跨会话偏好（Store 适配器） | 200 |
 
 错误统一结构：

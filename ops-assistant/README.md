@@ -143,6 +143,8 @@ uv run python scripts/run_cli.py --health              # 运行时健康（JSON�
 uv run python scripts/run_cli.py --list-threads        # 会话列表
 uv run python scripts/run_cli.py --read-thread <id>    # 从检查点读状态，不推进
 uv run python scripts/run_cli.py -q "..." --json       # 机器可读（含完整 report/trace/sources）
+uv run python scripts/run_cli.py -q "..." --stream     # 流式：逐节点打印进度
+uv run python scripts/run_cli.py -q "..." --stream --json  # 流式 + JSONL（每事件一行）
 ```
 
 约束：五种动作（`-q` / `--resume` / `--read-thread` / `--list-threads` / `--health`）**互斥**；`--resume` 必须配 `--thread-id`；`--edited-report-file` 只能和 `--resume` 一起用。退出码：`0` 成功、`1` 工作流失败或运行时错误、`2` argparse 用法错误。
@@ -163,8 +165,10 @@ uv run uvicorn ops_assistant.api.main:app --host 127.0.0.1 --port 8000
 | `GET` | `/api/threads` | 会话列表（`user_id`、`limit` 可选） |
 | `GET` | `/api/threads/{id}` | 从检查点读当前状态（不推进工作流） |
 | `POST` | `/api/chat` | 跑一轮，直到待审批或终态 |
+| `GET` | `/api/chat/stream` | 同上，但以 **SSE** 逐节点推送进度（查询参数 `question` / `thread_id` / `user_id`） |
 | `POST` | `/api/threads/{id}/resume` | 提交审批：`{"decision": "approve"|"reject"|"edit", "comment": "", "edited_report": null}` |
 | `GET` | `/api/threads/{id}/report` | 读取已导出的 Markdown |
+| `GET` | `/api/threads/{id}/reports` | 列出该会话已导出的各版本（`report_id` + 路径） |
 | `GET` / `PUT` | `/api/preferences` | 读取/写入用户偏好（`amount_unit` ∈ 元/万元，`default_dimension` ∈ region/product/month） |
 | `GET` | `/api/health` | `status / model_enabled / kb_chunks / db_ok / max_steps / max_tool_calls / checkpointer / closed` |
 | `GET` | `/api/usage` | 进程级累计用量 + 最近一次指标快照 |
@@ -176,7 +180,22 @@ uv run uvicorn ops_assistant.api.main:app --host 127.0.0.1 --port 8000
 ```bash
 curl -X POST http://127.0.0.1:8000/api/chat -H "Content-Type: application/json" \
   -d '{"question":"2026 年九月销售额比八月变化多少？按地区分解差额，并说明销售额是否扣除了退款。"}'
+
+# 流式（SSE）：逐节点收到进度，最后一帧是 final
+curl -N "http://127.0.0.1:8000/api/chat/stream?question=2026%20%E5%B9%B4%E4%B9%9D%E6%9C%88%E9%94%80%E5%94%AE%E9%A2%9D"
 ```
+
+`GET /api/chat/stream` 的事件契约（与 `AppRuntime.stream_turn` 一致，SSE 只多一层封装）：
+
+| `event:` | `data:` | 说明 |
+| --- | --- | --- |
+| `start` | `{thread_id, request_id, question}` | 会话已确定 |
+| `node` | `{node, update}` | 一个超级步完成；`node` 是真实节点名，`update` 是该节点写入的状态增量 |
+| `interrupt` | `{id, payload}` | 与 `TurnResult.interrupt` 同构，`payload.options` 为 `approve/reject/edit` |
+| `final` | `{turn}` | **终止帧**；`turn` 与 `POST /api/chat` 的响应体同构 |
+| `error` | `{code, message, request_id}` | **终止帧**；开流后才发生的错误走这里 |
+
+`final` 与 `error` 互斥且一定是最后一帧，`node`/`interrupt` 丢掉不影响终态正确性。待审批（409）、参数校验（422）、越权 thread（404）都发生在**开流之前**，仍是标准 HTTP 状态码与统一错误体——因为 SSE 一旦发出 200 就改不了状态码。**审批语义没有被流式改变**：收到 `interrupt` 后仍须调 `POST /api/threads/{id}/resume` 才会导出报告。
 
 ### 5.3 Streamlit UI
 

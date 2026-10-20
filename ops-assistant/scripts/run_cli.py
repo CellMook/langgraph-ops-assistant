@@ -38,6 +38,55 @@ if str(SRC_DIR) not in sys.path:  # 支持"不安装直接跑"：优先用仓库
 from ops_assistant.workflow.persistence import AppRuntime, ThreadNotFoundError  # noqa: E402
 from ops_assistant.workflow.state import DEFAULT_USER_ID  # noqa: E402
 
+# 节点名 → 中文步骤提示。只用于 CLI 进度展示，不进入任何业务判断。
+STEP_LABELS = {
+    "understand": "解析问题",
+    "clarify": "请求澄清",
+    "knowledge": "检索知识库",
+    "data": "查询经营数据",
+    "repair": "修复查询",
+    "compute": "计算指标与差额",
+    "draft": "渲染报告草稿",
+    "review": "人工审批",
+    "export": "导出报告",
+    "fail": "统一失败出口",
+}
+
+
+def _run_streaming(runtime: AppRuntime, args: argparse.Namespace) -> dict[str, Any] | None:
+    """流式跑一轮：逐事件打印进度，返回终止事件里的 TurnResult。
+
+    输出约定：
+        - ``--json``：每个事件打印成**一行** JSON（JSONL），完整 turn 在 ``final`` 事件里；
+          此时不再打印人类可读结果，避免一个命令产出两种 JSON 形态。
+        - 默认：打印中文步骤进度，最后仍由 ``_print_turn`` 输出与非流式一致的结果。
+
+    流式只改变"进度怎么送达"，不改变审批语义：``interrupt`` 之后仍须 ``--resume``。
+    """
+    turn: dict[str, Any] | None = None
+    for event in runtime.stream_turn(
+        str(args.question or ""),
+        thread_id=args.thread_id,
+        user_id=args.user_id,
+    ):
+        name = str(event.get("event") or "")
+        if args.json:
+            print(json.dumps(event, ensure_ascii=False), flush=True)
+        elif name == "node":
+            node = str(event.get("node") or "")
+            print(f"· {STEP_LABELS.get(node, node)}（{node}）", flush=True)
+        elif name == "interrupt":
+            payload = event.get("payload") or {}
+            options = "/".join(str(item) for item in (payload.get("options") or []))
+            print(f"! 待人工审批：{payload.get('type') or ''}，可选 {options}", flush=True)
+        elif name == "start":
+            print(f"· 会话 {event.get('thread_id') or ''}", flush=True)
+        if name in {"final", "error"}:
+            turn = event.get("turn") if name == "final" else None
+            if name == "error":
+                print(f"× 流式失败：{event.get('code') or ''} {event.get('message') or ''}", flush=True)
+    return turn
+
 
 def _configure_stdout() -> None:
     """尽量把标准输出切到 UTF-8，避免 Windows 控制台把中文标记成乱码。"""
@@ -75,6 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--health", action="store_true", help="打印运行时健康状态后退出")
     parser.add_argument("--limit", type=int, default=20, help="--list-threads 的最大条数，默认 20")
     parser.add_argument("--json", action="store_true", help="以 JSON 输出（便于脚本消费）")
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="流式跑一轮问答：逐节点打印进度（配 --json 时输出 JSONL 事件流）",
+    )
     return parser
 
 
@@ -250,6 +304,14 @@ def _run(runtime: AppRuntime, args: argparse.Namespace) -> int:
         return 1 if turn.get("status") in {"failed", "budget_exceeded"} else 0
 
     try:
+        if args.stream:
+            turn = _run_streaming(runtime, args)
+            if turn is None:
+                return _fail("流式执行没有产出可用的终止结果（final/error）。")
+            if not args.json:
+                # --json 时事件流已含完整 turn，不再叠加第二种 JSON 形态
+                _print_turn(turn, as_json=False)
+            return 1 if turn.get("status") in {"failed", "budget_exceeded"} else 0
         turn = runtime.invoke_turn(
             str(args.question or ""),
             thread_id=args.thread_id,
