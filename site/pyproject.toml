@@ -1,0 +1,13 @@
+[project]
+name = "ops-tutorial-site"
+version = "0.1.0"
+description = "教程在线阅读站（MkDocs Material）的构建配置：内容来自仓库，src/ 由 scripts/assemble.py 生成"
+requires-python = ">=3.11"
+dependencies = [
+    # 版本与 uv.lock 一致；升级依赖时显式更新并重新构建验收
+    "mkdocs==1.6.1",
+    "mkdocs-material==9.6.1",
+]
+
+[tool.uv]
+package = false  # 纯环境工程，不安装自身

@@ -7,6 +7,8 @@
 
 配套文档：`docs/`（架构、演示、限制、面试、验证）、`reference/`（两份离线速查表）、`交付清单.md`（全部文件与状态）。
 
+📖 **在线阅读版**：教程与全部文档已发布在 **[cellmook.github.io/langgraph-ops-assistant](https://cellmook.github.io/langgraph-ops-assistant/)**——由 `site/` 从仓库内容自动生成（MkDocs Material + GitHub Pages），`main` 推送即更新，无需单独维护文案。
+
 > **诚实声明（先读这一段）**
 > - 这是**教学与求职演示项目**，不是生产系统；演示数据由 `data/generate.py` 按固定随机种子（`SEED = 20260901`）生成，不包含任何真实业务数据。
 > - 本仓库**不做任何就业承诺**，也不声称"多少天精通"；它只展示我能讲清楚、能跑通、能解释取舍的东西。
