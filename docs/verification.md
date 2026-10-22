@@ -154,7 +154,7 @@ uv run python ../教程/实验/23_agent_budget.py
 
 | 脚本 | 单元 | 退出码 | 备注 |
 | --- | --- | --- | --- |
-| `00_diagnose.py` | 00 | 0 | 关键项全通过 |
+| `00_diagnose.py` | 00 | 0 | 关键项全通过（该脚本现更名 `01_diagnose.py` 并移入单元 01，作为装好环境后的验收步骤） |
 | `01_hello_model.py` | 01 | 0 | 规则模式分支输出完整报告 |
 | `01_probe_model.py` | 01 | 0 | 无密钥时显式跳过，不联网 |
 | `02_context_growth.py` | 02 | 0 | 规则模式模拟回复 |

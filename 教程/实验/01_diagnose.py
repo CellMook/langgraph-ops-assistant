@@ -1,7 +1,6 @@
-"""课程起点诊断脚本：只读检查本机是否具备继续学习的条件。
+"""环境自检脚本：只读检查本机是否具备继续学习的条件（单元 01 安装环节的验收步骤）。
 
-用法（装好单元 01 环境之前，系统 Python 即可）：python 教程/实验/00_diagnose.py
-复跑（完成单元 01 §5.1–5.2 后，在 ops-assistant 目录）：uv run python ../教程/实验/00_diagnose.py
+用法（完成单元 01 §5.1–5.2 后，在 ops-assistant 目录执行）：uv run python ../教程/实验/01_diagnose.py
 说明：不安装依赖、不联网、不调用模型；密钥只打印掩码；退出码 0 表示关键项通过。
 """
 
@@ -48,7 +47,7 @@ def check_python() -> tuple[bool, str]:
 def check_uv() -> tuple[bool, str]:
     found = shutil.which("uv")
     if found is None:
-        return False, "PATH 中找不到 uv（见单元 01 第 5 节安装步骤）"
+        return False, "PATH 中找不到 uv（见本单元 5.1 安装步骤）"
     return True, f"找到 uv：{found}"
 
 
@@ -108,16 +107,8 @@ def check_imports() -> tuple[bool, str]:
     return True, "核心依赖可导入"
 
 
-def practice_dict() -> None:
-    """D1 练习：读字典、返回新字典，不修改入参。"""
-    record = {"month": "2026-09", "net_cents": 123456}
-    updated = {**record, "region": "R_EAST"}
-    print(f"    原字典未被修改：{record}")
-    print(f"    新字典：{updated}")
-
-
 def main() -> int:
-    print("== 课程起点诊断（只读检查，不联网）==")
+    print("== 环境自检（只读检查，不联网）==")
     print(f"仓库根目录：{REPO_ROOT}")
     print(f"项目目录：{PROJECT_ROOT}")
 
@@ -134,15 +125,12 @@ def main() -> int:
         flag = "通过" if ok else "未通过"
         print(f"[{flag}] {name}：{detail}")
 
-    print("\n== D1 小练习参考实现 ==")
-    practice_dict()
-
     key_checks = [item for item in checks if item[0] in {"Python 版本", "项目骨架"}]
     failed_key = [name for name, ok, _ in key_checks if not ok]
     if failed_key:
         print(f"\n结论：关键项未通过（{'、'.join(failed_key)}），先补环境再开始单元 01。")
         return 1
-    print("\n结论：关键项通过。其余项不通过也不影响开始学习（见单元 01 的无密钥路径）。")
+    print("\n结论：关键项通过。其余项不通过也不影响开始学习（见 5.4 的无密钥路径）。")
     return 0
 
 
