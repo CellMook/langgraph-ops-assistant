@@ -1,6 +1,7 @@
 """课程起点诊断脚本：只读检查本机是否具备继续学习的条件。
 
-用法（在 ops-assistant 目录执行）：uv run python ../教程/实验/00_diagnose.py
+用法（装好单元 01 环境之前，系统 Python 即可）：python 教程/实验/00_diagnose.py
+复跑（完成单元 01 §5.1–5.2 后，在 ops-assistant 目录）：uv run python ../教程/实验/00_diagnose.py
 说明：不安装依赖、不联网、不调用模型；密钥只打印掩码；退出码 0 表示关键项通过。
 """
 
