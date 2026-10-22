@@ -74,3 +74,12 @@ Thumbs.db
 
 # 可重复运行的验收脚本输出
 ops-assistant/data/verification/
+
+# ---------------------------------------------------------------------------
+# 在线阅读站（site/）的生成物：src/ 与 nav.generated.yml 由
+# scripts/assemble.py 从仓库内容生成，dist/ 为 mkdocs 构建输出。
+# 任何人可按 site/README.md 重新生成，不入库。
+# ---------------------------------------------------------------------------
+site/src/
+site/nav.generated.yml
+site/dist/

@@ -1,0 +1,75 @@
+# 教程在线阅读站配置。
+# src/ 与 nav.generated.yml 由 scripts/assemble.py 生成（勿手改、勿入库）；
+# 导航结构由生成文件通过 INHERIT 注入，新增单元后重跑 assemble 即可。
+site_name: LangGraph 智能体开发教程
+site_description: 以「经营数据分析与知识库智能助手」项目为主线的 LangChain / LangGraph 中文教程——22 个基础单元 + 流式输出附录 + 契约与版本化验收。
+site_author: CellMook
+site_url: https://cellmook.github.io/langgraph-ops-assistant/
+repo_url: https://github.com/CellMook/langgraph-ops-assistant
+repo_name: CellMook/langgraph-ops-assistant
+
+INHERIT: nav.generated.yml
+
+docs_dir: src
+site_dir: dist
+use_directory_urls: true
+strict: false  # CI 里用 mkdocs build --strict 兜底
+
+theme:
+  name: material
+  language: zh
+  font: false  # 不外联字体，离线/弱网友好
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      toggle:
+        icon: material/brightness-7
+        name: 切换到暗色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      toggle:
+        icon: material/brightness-4
+        name: 切换到亮色模式
+  features:
+    - navigation.instant  # 单页应用式加载，翻页秒开
+    - navigation.tracking
+    - navigation.tabs  # 顶层分区（教程/项目文档/速查表）作为标签页
+    - navigation.top  # 返回顶部
+    - navigation.footer  # 上一页/下一页
+    - navigation.path  # 面包屑
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy  # 一键复制代码（教程含大量实验脚本）
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.tasklist:
+      custom_checkbox: true  # 各单元验收清单的 - [ ] 复选框
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.superfences:
+      custom_fences:  # 课程总览中的 mermaid 依赖图
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - toc:
+      permalink: true  # 标题锚点链接，便于分享到具体小节
+      slugify: !!python/name:markdown.extensions.toc.slugify_unicode  # 中文标题锚点保留汉字（与 GitHub 一致）
+
+plugins:
+  - search
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: info
