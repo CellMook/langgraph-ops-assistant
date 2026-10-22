@@ -1,0 +1,57 @@
+# 教程在线阅读站：组装 → 严格构建 → 部署 GitHub Pages
+# 内容不单独维护：assemble.py 从仓库生成 site/src，因此本工作流
+# 同时验证「仓库内容 → 站点」整条链路（strict 模式零警告才可通过）。
+# Pull Request 只构建校验、不部署；main 推送与手动触发才部署。
+name: Tutorial site (Pages)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false  # 部署中途不被新提交打断
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: '0.13.5'  # 与 site/uv.lock 的生成版本一致（lock revision 5 需要较新 uv）
+          python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: site/uv.lock
+      - run: uv sync --locked
+      - run: uv run python scripts/assemble.py
+      - run: uv run mkdocs build --strict
+      # 仅部署路径需要准备 Pages；PR 构建只做校验
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+        if: github.event_name != 'pull_request'
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        if: github.event_name != 'pull_request'
+        with:
+          path: site/dist
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
