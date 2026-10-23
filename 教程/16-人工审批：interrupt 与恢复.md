@@ -152,11 +152,484 @@ payload 会被写进 SQLite 检查点再读回来。所以项目用 `jsonable()`
 
 源码：`workflow/nodes.py` 的 review_node/export_node、`workflow/persistence.py` 的 resume_turn。以下实验展示框架中断语义；HTTP 集成示例见单元 19。
 
-### 5.2 可运行实验：`教程/实验/16_interrupt_resume.py`（完整代码）
+### 5.2 可运行实验：`教程/实验/16_interrupt_resume.py`（一步步搭出来）
 
-这个实验是一个"草稿 → 审批 → 导出"的迷你图，**不导入项目源码、不联网、不需要模型**。它用模块级列表 `REPLAYS` 记录每个节点被执行的次数，方便你亲眼看到"review 被重跑"。
+迷你图 `draft → review（interrupt）→ export`，把审批的**九种局面**全部演一遍：暂停、approve、reject、edit 采纳、edit 拒绝、非法值、重复 resume 幂等、无待审批报错、落盘核对。不导入 ops_assistant、不联网、不需要模型。脚本最大（307 行），拆 **8 步**搭出，最终与仓库完全一致。
 
-保存到 `教程/实验/16_interrupt_resume.py`：
+#### 步骤 1：别名表、状态与"重放记录仪"
+
+**这一步解决什么**：审批入口必须**宽容输入**（用户可能打"通过/ok/yes"）、**严格语义**（只有三种决定）；再加一个模块级 REPLAYS 列表，把"哪些节点被重新执行了"暴露给肉眼。
+
+新建 `教程/实验/16_interrupt_resume.py`：
+
+```python
+"""单元 16 实验（步骤 1）：别名表、状态与重放记录仪。"""
+
+from __future__ import annotations
+
+import operator
+import re
+from pathlib import Path
+from typing import Annotated, Any, TypedDict
+
+from langgraph.types import interrupt
+
+OUTPUT_DIR = Path(__file__).resolve().parent / "_output"
+REPORT_PATH = OUTPUT_DIR / "report-demo.md"
+
+APPROVAL_OPTIONS = ("approve", "reject", "edit")
+ALIASES = {
+    "approve": "approve",
+    "approved": "approve",
+    "ok": "approve",
+    "yes": "approve",
+    "通过": "approve",
+    "批准": "approve",
+    "reject": "reject",
+    "rejected": "reject",
+    "no": "reject",
+    "拒绝": "reject",
+    "驳回": "reject",
+    "edit": "edit",
+    "modify": "edit",
+    "修改": "edit",
+    "编辑": "edit",
+}
+
+# 模块级列表：用来观察"节点被重复执行"（真实项目里应改成 trace 字段）
+REPLAYS: list[str] = []
+
+
+class St(TypedDict, total=False):
+    """迷你状态：草稿、决策、最终文本、状态、错误。"""
+
+    topic: str
+    draft: str
+    decision: str
+    comment: str
+    final: str
+    status: str
+    errors: Annotated[list[str], operator.add]
+```
+
+**逐行讲解**：
+
+- `ALIASES` 是**入口归一表**：中英文、正式口语全收——但**值只有三个**。宽容只发生在这一层，后面全部是严格三值世界。
+- `REPLAYS` 注释里自我检讨"真实项目应改成 trace 字段"：模块级可变全局在教学脚本里可接受，生产代码里是坏味道——**作者自己标注**，比读者踩坑强。
+- `errors` 用 `operator.add`：错误累积不覆盖（单元 07 的纪律，第三次出现）。
+
+**运行与观察**（临时验证）：
+
+```python
+if __name__ == "__main__":
+    print(ALIASES["通过"], ALIASES["no"], ALIASES["编辑"])
+```
+
+```text
+approve reject edit
+```
+
+#### 步骤 2：两个纯函数——编辑校验与恢复值归一
+
+**这一步解决什么**：审批的两个**安全关键**规则先写成纯函数（可单测、可复用）：①"正文只读，只能追加无数字备注"（编辑不得改数字）；②把任意恢复值（字符串/字典）归一成 (decision, comment, edited)。
+
+```python
+def edited_or_draft(edited: str, draft: str) -> tuple[str, list[str]]:
+    """正文不可改；只允许追加不含数字的备注。"""
+    text = str(edited or "").strip()
+    if not text.startswith(draft):
+        raise ValueError("正文只读，只能追加人工备注")
+    note = text[len(draft) :]
+    if re.search(r"[\d一二三四五六七八九十百千万亿零〇两%％]|https?://|\[来源", note):
+        raise ValueError("备注不能新增数字、百分比、URL 或引用")
+    return text, []
+
+
+def parse_resume(value: Any) -> tuple[str, str, str]:
+    """把恢复值归一成 (decision, comment, edited_report)；无法识别返回空串。"""
+    if isinstance(value, str):
+        return ALIASES.get(value.strip().lower(), ""), "", ""
+    if not isinstance(value, dict):
+        return "", "", ""
+    decision = str(value.get("decision") or value.get("action") or "").strip().lower()
+    comment = str(value.get("comment") or value.get("feedback") or "").strip()
+    edited = value.get("edited_report")
+    if edited is None:
+        edited = value.get("report_markdown")
+    return ALIASES.get(decision, ""), comment, str(edited or "").strip()
+```
+
+**逐行讲解**：
+
+- `text.startswith(draft)`：编辑稿必须**原样包含**草稿开头——改一个字都不行；追加的部分叫 note。
+- note 的黑名单**连中文数字都列全了**（一二三…零〇两）——人工备注只许说人话，**不许夹带新数字**：报告里的每个数字都必须来自程序计算，这是"对账失败禁出稿"的微观执行。
+- `parse_resume` 接受 `decision/action`、`comment/feedback`、`edited_report/report_markdown` **两套字段名**：API 演进常见的兼容层；认不出来就返回空串——**由调用方决定空串的后果**（步骤 4 会看到：按 reject 处理）。
+
+**运行与观察**（临时验证）：
+
+```python
+    print(parse_resume("OK"))
+    print(parse_resume({"decision": "编辑", "edited_report": "x"}))
+    try:
+        edited_or_draft("改头换面的稿子", "原稿")
+    except ValueError as exc:
+        print("ValueError:", exc)
+```
+
+```text
+('approve', '', '')
+('edit', '', 'x')
+ValueError: 正文只读，只能追加人工备注
+```
+
+#### 步骤 3：`draft_node` 与 `review_node` 上半——interrupt 的"发球"
+
+**这一步解决什么**：草稿节点渲染固定文本；review 节点在 interrupt **之前**只做纯读纯算，把审批人需要的一切装进 payload，然后**把球抛出去**（`interrupt(payload)`）。
+
+```python
+def draft_node(state: St) -> dict[str, Any]:
+    """渲染一份固定草稿（真实项目里由 report/format.py 渲染）。"""
+    REPLAYS.append("draft")
+    topic = str(state.get("topic") or "（未指定）")
+    draft = (
+        f"# 经营分析报告：{topic}\n"
+        "## 结论\n"
+        "本期净销售额 1,234.00 元，比上期减少 12.5%。\n"
+        "## 明细\n"
+        "差额 -176.00 元，其中退款 200.00 元。"
+    )
+    return {"draft": draft, "status": "awaiting_approval"}
+
+
+def review_node(state: St) -> dict[str, Any]:
+    """审批节点：interrupt 之前只做纯读/纯算，恢复后只写状态。"""
+    REPLAYS.append("review:before_interrupt")
+    payload = {
+        "type": "report_approval",
+        "topic": str(state.get("topic") or ""),
+        "options": list(APPROVAL_OPTIONS),
+        "summary": "本期 1,234.00 元 / 上期 1,410.00 元 / 差额 -176.00 元",
+        "report_markdown": str(state.get("draft") or ""),
+        "instructions": "approve 导出；edit 提供修改稿后导出（正文只读，仅追加无数字备注）；reject 不导出。",
+    }
+    value = interrupt(payload)
+    REPLAYS.append("review:after_interrupt")
+```
+
+**逐行讲解**：
+
+- `REPLAYS.append` 夹在 interrupt **前后各一条**——恢复后你会看到 `before_interrupt` 出现**两次**（重放），这正是 interrupt 的机制证据（步骤 7 的段 2 观察）。
+- payload 五个字段 = 审批人做决定需要的**全部信息**：类型、主题、选项、摘要、全文、规则说明——**中断载荷是给人看的界面契约**。
+- `interrupt(payload)` 一行就是"暂停"：抛出异常给框架、框架存进检查点、invoke 返回——**图没崩，是在等人**。它的返回值 `value` 要等到 resume 时才拿到。
+- **interrupt 前不写任何状态**：draft 在 interrupt 前早已落进状态（draft_node 完成的），review 在中断前只读——保证重放时**无副作用可重复**。
+
+#### 步骤 4：`review_node` 下半与 `export_node`——恢复后的三分支
+
+**这一步解决什么**：拿到恢复值后的裁决：非法→按 reject（宁拒不误出）、reject→不导出、approve→原稿导出、edit→校验通过才导出。
+
+```python
+    decision, comment, edited = parse_resume(value)
+    errors: list[str] = []
+    if decision not in APPROVAL_OPTIONS:
+        errors.append(
+            f"INVALID_DECISION: 无法识别“{decision or '（空）'}”，按拒绝处理以免误导出文件。"
+        )
+        decision = "reject"
+
+    if decision == "reject":
+        return {
+            "decision": "reject",
+            "comment": comment,
+            "final": "",
+            "status": "rejected",
+            "errors": errors,
+        }
+
+    draft = str(state.get("draft") or "")
+    final, notes = edited_or_draft(edited, draft) if decision == "edit" else (draft, [])
+    errors.extend(notes)
+    return {
+        "decision": decision,
+        "comment": comment,
+        "final": final,
+        "status": "approved",
+        "errors": errors,
+    }
+
+
+def export_node(state: St) -> dict[str, Any]:
+    """唯一的落盘节点；真实项目用"临时文件 + os.replace"原子写。"""
+    REPLAYS.append("export")
+    text = str(state.get("final") or state.get("draft") or "")
+    REPORT_PATH.write_text(text + "\n", encoding="utf-8")
+    return {"status": "approved", "final": text}
+```
+
+**逐行讲解**：
+
+- **非法决定按 reject 而不是报错崩掉**：审批是安全闸门，认不出的输入**宁可不放行**——错误码 INVALID_DECISION 进 errors，人能看到原因。
+- `edited_or_draft(...) if decision == "edit" else (draft, [])`：**只有 edit 才碰编辑校验**；校验抛 ValueError 会一路传到 resume 的调用方（步骤 6 会先拦截）。
+- `export_node` 是**全图唯一的落盘点**：文件操作集中在一点，"什么会写盘"一眼可查——生产版还要原子写（临时文件 + os.replace），教学版直接 write。
+- `route_after_review`（下一步装配时接上）：`decision in {"approve","edit"}` 才去 export，reject 直接到 END。
+
+#### 步骤 5：装配与"挖中断"——`build_graph` / `extract_interrupt`
+
+**这一步解决什么**：把图接起来（review 后条件分支）；再写一个**从快照里把 pending interrupt 挖出来**的函数——不同版本快照结构不同（interrupts 直挂 / 藏在 tasks 里），两处都找。
+
+```python
+from langgraph.graph import END, START, StateGraph
+
+
+def route_after_review(state: St) -> str:
+    """批准或编辑才导出，其它一律结束。"""
+    return (
+        "export" if str(state.get("decision") or "") in {"approve", "edit"} else "end"
+    )
+
+
+def build_graph(checkpointer: Any) -> Any:
+    """装配迷你图：draft → review → (export | END)。"""
+    builder = StateGraph(St)
+    builder.add_node("draft", draft_node)
+    builder.add_node("review", review_node)
+    builder.add_node("export", export_node)
+    builder.add_edge(START, "draft")
+    builder.add_edge("draft", "review")
+    builder.add_conditional_edges(
+        "review", route_after_review, {"export": "export", "end": END}
+    )
+    builder.add_edge("export", END)
+    return builder.compile(checkpointer=checkpointer)
+
+
+def extract_interrupt(snapshot: Any) -> dict[str, Any] | None:
+    """从状态快照里取待处理中断（与项目 _extract_interrupt 同构的简化版）。"""
+    candidates: list[Any] = []
+    raw = getattr(snapshot, "interrupts", None)
+    if raw:
+        candidates.extend(list(raw))
+    if not candidates:
+        for task in getattr(snapshot, "tasks", ()) or ():
+            for item in getattr(task, "interrupts", ()) or ():
+                candidates.append(item)
+    if not candidates:
+        return None
+    first = candidates[0]
+    if isinstance(first, dict):
+        return {"id": str(first.get("id") or ""), "payload": first.get("value")}
+    return {
+        "id": str(getattr(first, "id", "") or ""),
+        "payload": getattr(first, "value", None),
+    }
+```
+
+**逐行讲解**：
+
+- `add_conditional_edges("review", route_after_review, ...)`：审批结论变路由——**决定权在状态里，不在图结构里**。
+- `extract_interrupt` 的**两栖搜索**：新版本快照有 `snapshot.interrupts`，旧版本藏在 `snapshot.tasks[*].interrupts`——`getattr(..., None)` 两边都不赌。
+- 返回 `{id, payload}` 或 None：**中断id 是 resume 的精确锚点**（主项目 resume 要 report_id + interrupt_id 双锚，这里简化版只透传）。
+- `build_graph(checkpointer)` 参数化 checkpointer：**interrupt 依赖检查点**——没有它，"暂停"无处可存（主项目用 SQLite 版）。
+
+#### 步骤 6：`resume_mini`——恢复的门卫
+
+**这一步解决什么**：模拟项目的 `resume_turn`：**先查有没有 pending**（没有就分两种情况：已批准→幂等返回、没草稿→报错）、edit 先做**预校验**（不让坏编辑稿进图）、然后 `Command(resume=value)`。
+
+```python
+from langgraph.types import Command
+
+
+def resume_mini(graph: Any, config: dict[str, Any], value: Any) -> dict[str, Any]:
+    """模拟项目 resume_turn：先确认有 pending interrupt，再 Command(resume=...)。"""
+    snapshot = graph.get_state(config)
+    pending = extract_interrupt(snapshot)
+    values = dict(snapshot.values or {})
+    if pending is None:
+        if values.get("status") == "approved" and values.get("final"):
+            return values
+        raise ValueError("该会话没有待审批的报告：请先调用 /api/chat 生成报告草稿。")
+    decision, _, edited = parse_resume(value)
+    if decision == "edit":
+        edited_or_draft(edited, str(values.get("draft") or ""))
+    graph.invoke(Command(resume=value), config=config)
+    return dict(graph.get_state(config).values)
+
+
+def config_for(thread_id: str) -> dict[str, Any]:
+    """thread_id 决定检查点归属；没有它 interrupt 无处可存。"""
+    return {"configurable": {"thread_id": thread_id}}
+```
+
+**逐行讲解**：
+
+- pending 为 None 的**两分支**：已 approved 且有 final → **幂等地把原结果再给一次**（重复点击"批准"不该出错也不该重复导出）；否则 → 明确报错"没有待审批的报告"。报错文案带**下一步指引**（"请先调用 /api/chat"）——与主项目 API 的语义一致。
+- `edited_or_draft(...)` 在 invoke **之前**预校验：坏的编辑稿（改了正文/夹带数字）**根本不进图**——图内校验（步骤 4）还在，但门外先挡一道，**报错更早、状态更干净**（中断仍保持 pending）。
+- `Command(resume=value)`：LangGraph 恢复的标准姿势——value 就是 `interrupt()` 的返回值；`config` 必须同一个 thread_id。
+
+#### 步骤 7：`main()` 上半——暂停、approve、reject、edit 两面
+
+**这一步解决什么**：前五种局面：图怎么停、approve 怎么续、reject 怎么干净地结束、edit 采纳与拒绝。
+
+```python
+import json
+import shutil
+
+from langgraph.checkpoint.memory import InMemorySaver
+
+
+def main() -> int:
+    """依次演示：暂停 → approve → reject → edit（追加/拒绝）→ 非法值 → 幂等 → 报错。"""
+    print("== 单元 16 实验：interrupt 与恢复 ==")
+    if OUTPUT_DIR.exists():
+        shutil.rmtree(OUTPUT_DIR)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    graph = build_graph(InMemorySaver())
+
+    print("\n== 1) 第一次 invoke：图停在 review 的 interrupt 上 ==")
+    cfg1 = config_for("t1")
+    graph.invoke({"topic": "九月华东净销售额"}, config=cfg1)
+    snap = graph.get_state(cfg1)
+    pending = extract_interrupt(snap)
+    print("status =", snap.values["status"])
+    print("next =", snap.next)
+    print("interrupt.payload.type =", pending["payload"]["type"])
+    print("interrupt.payload.options =", pending["payload"]["options"])
+    print(
+        "payload 可 JSON 序列化 =",
+        bool(json.dumps(pending["payload"], ensure_ascii=False)),
+    )
+    print("REPLAYS =", REPLAYS)
+
+    print("\n== 2) resume approve：继续跑 export ==")
+    after = resume_mini(graph, cfg1, "approve")
+    print("status =", after["status"])
+    print("final 非空 =", bool(after["final"]))
+    print("REPLAYS =", REPLAYS)
+    print("review 节点被执行的次数 =", REPLAYS.count("review:before_interrupt"))
+
+    print("\n== 3) resume reject：不进 export，不写文件 ==")
+    cfg2 = config_for("t2")
+    graph.invoke({"topic": "八月西南退款"}, config=cfg2)
+    rejected = resume_mini(graph, cfg2, {"decision": "reject", "comment": "口径不对"})
+    print("status =", rejected["status"])
+    print("final =", repr(rejected["final"]))
+    print("最后执行的是 =", REPLAYS[-1])
+
+    print("\n== 4) resume edit：追加无数字备注会被采纳 ==")
+    cfg3 = config_for("t3")
+    graph.invoke({"topic": "九月西南净销售额"}, config=cfg3)
+    draft3 = str(graph.get_state(cfg3).values["draft"])
+    edited_ok = draft3 + "\n（本报告已由运营负责人复核）"
+    edited_out = resume_mini(
+        graph, cfg3, {"decision": "edit", "edited_report": edited_ok}
+    )
+    print("status =", edited_out["status"])
+    print("errors =", edited_out["errors"])
+    print("采纳了修改稿 =", "运营负责人复核" in edited_out["final"])
+
+    print("\n== 5) resume edit：改了正文会被拒绝 ==")
+    cfg4 = config_for("t4")
+    graph.invoke({"topic": "九月华南净销售额"}, config=cfg4)
+    draft4 = str(graph.get_state(cfg4).values["draft"])
+    bad = draft4.replace("1,234.00", "9,999.00")
+    try:
+        resume_mini(graph, cfg4, {"decision": "edit", "edited_report": bad})
+    except ValueError as exc:
+        print("ValueError:", exc)
+    print("仍待审批 =", bool(extract_interrupt(graph.get_state(cfg4))))
+    assert graph.get_state(cfg4).values["status"] == "awaiting_approval"
+```
+
+**运行与观察**（实测 2026-10-23，段 1–5）：
+
+```text
+== 1) 第一次 invoke：图停在 review 的 interrupt 上 ==
+status = awaiting_approval
+next = ('review',)
+interrupt.payload.type = report_approval
+interrupt.payload.options = ['approve', 'reject', 'edit']
+payload 可 JSON 序列化 = True
+REPLAYS = ['draft', 'review:before_interrupt']
+
+== 2) resume approve：继续跑 export ==
+status = approved
+final 非空 = True
+REPLAYS = ['draft', 'review:before_interrupt', 'review:before_interrupt', 'review:after_interrupt', 'export']
+review 节点被执行的次数 = 2
+
+== 3) resume reject：不进 export，不写文件 ==
+status = rejected
+final = ''
+最后执行的是 = review:after_interrupt
+
+== 4) resume edit：追加无数字备注会被采纳 ==
+status = approved
+errors = []
+采纳了修改稿 = True
+
+== 5) resume edit：改了正文会被拒绝 ==
+ValueError: 正文只读，只能追加人工备注
+仍待审批 = True
+```
+
+**段 2 是全实验的题眼**：`review:before_interrupt` 出现两次——resume 时**整个节点从头重放**（interrupt 之前的部分再跑一遍），然后 `after_interrupt` 与 `export` 才出现。所以步骤 3 反复强调"中断前只做纯读纯算"。段 5 的坏编辑稿被门卫拦下，中断**原封不动还在**（仍待审批 = True）。
+
+#### 步骤 8：`main()` 下半与整合——非法值、幂等、报错、落盘核对
+
+**这一步解决什么**：后四种局面：认不出的决定、重复 resume、resume 空会话、以及最终**盘点的权利**（文件只该有两份语义：t1 原稿、t3 加尾注）。
+
+```python
+    print("\n== 6) 无法识别的结论：按拒绝处理 ==")
+    cfg5 = config_for("t5")
+    graph.invoke({"topic": "九月华北净销售额"}, config=cfg5)
+    unknown = resume_mini(graph, cfg5, "同意")
+    print("status =", unknown["status"])
+    print("errors =", unknown["errors"])
+
+    print("\n== 7) 重复 resume 已批准的会话：幂等返回同一结果 ==")
+    again = resume_mini(graph, cfg1, "approve")
+    print("status =", again["status"])
+    print("final 与第一次相同 =", again["final"] == after["final"])
+
+    print("\n== 8) resume 一个没有待审批的会话：报错而不是瞎跑 ==")
+    try:
+        resume_mini(graph, cfg2, "approve")
+    except ValueError as exc:
+        print("ValueError:", exc)
+
+    print("\n== 9) 落盘结果：只有 approve/edit 的两条线程各写了一次 ==")
+    print("_output 下的文件 =", sorted(path.name for path in OUTPUT_DIR.iterdir()))
+    print(
+        "文件里含人工复核尾注 =",
+        "运营负责人复核" in REPORT_PATH.read_text(encoding="utf-8"),
+    )
+    return 0
+```
+
+（文件末尾补 `if __name__ == "__main__": raise SystemExit(main())`。）
+
+**运行与观察**（实测，段 6–9）：
+
+```text
+== 6) 无法识别的结论：按拒绝处理 ==
+status = rejected
+errors = ['INVALID_DECISION: 无法识别“（空）”，按拒绝处理以免误导出文件。']
+
+== 7) 重复 resume 已批准的会话：幂等返回同一结果 ==
+status = approved
+final 与第一次相同 = True
+
+== 8) resume 一个没有待审批的会话：报错而不是瞎跑 ==
+ValueError: 该会话没有待审批的报告：请先调用 /api/chat 生成报告草稿。
+
+== 9) 落盘结果：只有 approve/edit 的两条线程各写了一次 ==
+_output 下的文件 = ['report-demo.md']
+文件里含人工复核尾注 = True
+```
+
+（"同意"不在 ALIASES 里 → decision 为空串 → 按 reject；t2 是 reject 线程，resume 它触发"没有待审批"报错——注意报错与"重复批准"是两种不同局面；文件只有一份（t1 与 t3 写同一路径，后者含尾注）。）
+
+清理各步临时验证，完整文件应与仓库完全一致：
 
 ```python
 """单元 16 实验：interrupt 与恢复（approve / edit / reject）。
@@ -225,7 +698,7 @@ def edited_or_draft(edited: str, draft: str) -> tuple[str, list[str]]:
     text = str(edited or "").strip()
     if not text.startswith(draft):
         raise ValueError("正文只读，只能追加人工备注")
-    note = text[len(draft):]
+    note = text[len(draft) :]
     if re.search(r"[\d一二三四五六七八九十百千万亿零〇两%％]|https?://|\[来源", note):
         raise ValueError("备注不能新增数字、百分比、URL 或引用")
     return text, []
@@ -276,7 +749,9 @@ def review_node(state: St) -> dict[str, Any]:
     decision, comment, edited = parse_resume(value)
     errors: list[str] = []
     if decision not in APPROVAL_OPTIONS:
-        errors.append(f"INVALID_DECISION: 无法识别“{decision or '（空）'}”，按拒绝处理以免误导出文件。")
+        errors.append(
+            f"INVALID_DECISION: 无法识别“{decision or '（空）'}”，按拒绝处理以免误导出文件。"
+        )
         decision = "reject"
 
     if decision == "reject":
@@ -310,7 +785,9 @@ def export_node(state: St) -> dict[str, Any]:
 
 def route_after_review(state: St) -> str:
     """批准或编辑才导出，其它一律结束。"""
-    return "export" if str(state.get("decision") or "") in {"approve", "edit"} else "end"
+    return (
+        "export" if str(state.get("decision") or "") in {"approve", "edit"} else "end"
+    )
 
 
 def build_graph(checkpointer: Any) -> Any:
@@ -321,7 +798,9 @@ def build_graph(checkpointer: Any) -> Any:
     builder.add_node("export", export_node)
     builder.add_edge(START, "draft")
     builder.add_edge("draft", "review")
-    builder.add_conditional_edges("review", route_after_review, {"export": "export", "end": END})
+    builder.add_conditional_edges(
+        "review", route_after_review, {"export": "export", "end": END}
+    )
     builder.add_edge("export", END)
     return builder.compile(checkpointer=checkpointer)
 
@@ -341,7 +820,10 @@ def extract_interrupt(snapshot: Any) -> dict[str, Any] | None:
     first = candidates[0]
     if isinstance(first, dict):
         return {"id": str(first.get("id") or ""), "payload": first.get("value")}
-    return {"id": str(getattr(first, "id", "") or ""), "payload": getattr(first, "value", None)}
+    return {
+        "id": str(getattr(first, "id", "") or ""),
+        "payload": getattr(first, "value", None),
+    }
 
 
 def resume_mini(graph: Any, config: dict[str, Any], value: Any) -> dict[str, Any]:
@@ -383,7 +865,10 @@ def main() -> int:
     print("next =", snap.next)
     print("interrupt.payload.type =", pending["payload"]["type"])
     print("interrupt.payload.options =", pending["payload"]["options"])
-    print("payload 可 JSON 序列化 =", bool(json.dumps(pending["payload"], ensure_ascii=False)))
+    print(
+        "payload 可 JSON 序列化 =",
+        bool(json.dumps(pending["payload"], ensure_ascii=False)),
+    )
     print("REPLAYS =", REPLAYS)
 
     print("\n== 2) resume approve：继续跑 export ==")
@@ -406,7 +891,9 @@ def main() -> int:
     graph.invoke({"topic": "九月西南净销售额"}, config=cfg3)
     draft3 = str(graph.get_state(cfg3).values["draft"])
     edited_ok = draft3 + "\n（本报告已由运营负责人复核）"
-    edited_out = resume_mini(graph, cfg3, {"decision": "edit", "edited_report": edited_ok})
+    edited_out = resume_mini(
+        graph, cfg3, {"decision": "edit", "edited_report": edited_ok}
+    )
     print("status =", edited_out["status"])
     print("errors =", edited_out["errors"])
     print("采纳了修改稿 =", "运营负责人复核" in edited_out["final"])
@@ -443,13 +930,31 @@ def main() -> int:
 
     print("\n== 9) 落盘结果：只有 approve/edit 的两条线程各写了一次 ==")
     print("_output 下的文件 =", sorted(path.name for path in OUTPUT_DIR.iterdir()))
-    print("文件里含人工复核尾注 =", "运营负责人复核" in REPORT_PATH.read_text(encoding="utf-8"))
+    print(
+        "文件里含人工复核尾注 =",
+        "运营负责人复核" in REPORT_PATH.read_text(encoding="utf-8"),
+    )
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
 ```
+
+**回看地图**：
+
+| 步骤 | 最终脚本里的位置 |
+| --- | --- |
+| 1 入口 | `APPROVAL_OPTIONS`/`ALIASES`、`REPLAYS`、`St` |
+| 2 纯函数 | `edited_or_draft()`、`parse_resume()` |
+| 3 发球 | `draft_node()`、`review_node()` 上半（payload + interrupt） |
+| 4 裁决 | `review_node()` 下半、`export_node()` |
+| 5 装配 | `route_after_review()`、`build_graph()`、`extract_interrupt()` |
+| 6 门卫 | `resume_mini()`、`config_for()` |
+| 7 五局面 | `main()` 段 1–5 |
+| 8 四局面 | `main()` 段 6–9 + 整合 |
+
+运行与验收：见 §5.3 的命令。核心验收：`review:before_interrupt` 计数为 2（重放）、坏编辑稿后仍待审批、段 7 幂等、段 8 报错——四件事都对，interrupt 的"暂停—重放—续跑"就真的通了。
 
 ### 5.3 运行命令
 

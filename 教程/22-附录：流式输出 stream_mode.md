@@ -127,6 +127,180 @@ uv run python scripts/run_cli.py -q "..." --stream --json   # JSONL：每事件�
 
 保存路径：`教程/实验/22_streaming.py`
 
+把 LangGraph 的四种流式姿势（updates / 多模式组合 / `__interrupt__` 事件 / resume 续流）**接到主项目工作流上**验证。拆 5 步搭出，最终与仓库完全一致；纯规则模式，不需要密钥。
+
+#### 步骤 1：环境与装配——拿到 graph、config、context 三样
+
+**这一步解决什么**：流式操作直接发生在 `graph` 上，所以要自己准备 `config`（thread/user）和 `context`（节点依赖注入）——正好借此看清 `invoke_turn` 帮你包掉了什么。
+
+新建 `教程/实验/22_streaming.py`：
+
+```python
+"""单元 22（附录）实验（步骤 1）：环境与装配。"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+PROJECT_DIR = Path(__file__).resolve().parents[2] / "ops-assistant"
+SRC_DIR = PROJECT_DIR / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from ops_assistant.config import load_settings  # noqa: E402
+from ops_assistant.workflow.persistence import AppRuntime  # noqa: E402
+
+MAIN_QUESTION = (
+    "2026 年九月销售额比八月变化多少？按地区分解差额，并说明销售额是否扣除了退款。"
+)
+
+
+def main() -> None:
+    settings = load_settings(PROJECT_DIR)
+    runtime = AppRuntime.create(settings, use_memory_checkpointer=True)
+    try:
+        thread_id = "exp22-stream"
+        config = {
+            "configurable": {"thread_id": thread_id, "user_id": "demo-user"},
+        }
+        context = runtime._context("demo-user")  # noqa: SLF001 - 教学实验直接复用装配逻辑
+```
+
+**逐行讲解**：
+
+- `runtime._context(...)`：借内部方法拿装配好的 context——**教学实验的特权**（主项目有公开的 `stream_turn`，练习 2 读它）。
+- `config` 双钥匙（thread_id + user_id）与单元 15 同款；`use_memory_checkpointer=True` 不留检查点文件。
+
+#### 步骤 2：`stream_mode="updates"`——节点级进度
+
+**这一步解决什么**：CLI 转圈时用户最想看"跑到哪了"。updates 模式每个节点跑完立刻吐 `{节点名: 增量}`——**进度条的数据源**。
+
+```python
+        print("== 1) stream_mode='updates'：节点级进度反馈 ==")
+        for chunk in runtime.graph.stream(
+            {"question": MAIN_QUESTION, "thread_id": thread_id, "user_id": "demo-user"},
+            config=config,
+            context=context,
+            stream_mode="updates",
+        ):
+            for node, update in chunk.items():
+                keys = sorted(update.keys()) if isinstance(update, dict) else ["<非dict>"]
+                print(f"  节点 {node:<12} 写入字段: {keys}")
+```
+
+**逐行讲解**：
+
+- 输入是**状态增量字典**（只给三个字段；`total=False` 的图各节点自兜底）——与 `invoke_turn` 内部喂 `initial_state(...)` 略有不同，实验从简。
+- `isinstance(update, dict) else ["<非dict>"]`：**`__interrupt__` 事件的载荷不是 dict**——这个分支就是给它准备的。
+- `stream` 与 `invoke` 一样吃 `context=`：**节点代码零改动**就能流式。
+
+**运行与观察**（实测 2026-10-23）：
+
+```text
+== 1) stream_mode='updates'：节点级进度反馈 ==
+  节点 understand   写入字段: ['budget', 'clarification', 'last_spec', 'route', 'spec', 'status', 'trace']
+  节点 knowledge    写入字段: ['budget', 'errors', 'knowledge_hits', 'policy_context', 'sources', 'trace']
+  节点 data         写入字段: ['budget', 'data_result', 'sources', 'tables', 'trace']
+  节点 compute      写入字段: ['budget', 'calculation', 'chart', 'errors', 'sources', 'tables', 'trace']
+  节点 draft        写入字段: ['budget', 'draft_report', 'errors', 'status', 'trace']
+  节点 __interrupt__ 写入字段: ['<非dict>']
+```
+
+五个业务节点依次吐增量，最后一条是 `__interrupt__`——**审批中断在流里是一个事件**，前端拿到它就该弹审批框。
+
+#### 步骤 3：快照确认——确实停在审批上
+
+**这一步解决什么**：流停了，但"停在哪"要看快照说了算——`status` 与 `next` 是权威。
+
+```python
+        print("== 2) 状态快照：应停在 awaiting_approval ==")
+        snapshot = runtime.graph.get_state(config)
+        print("  status:", snapshot.values.get("status"))
+        print("  interrupt:", (snapshot.next and "有" ) or "无")
+```
+
+**逐行讲解**：
+
+- `(snapshot.next and "有") or "无"`：next 非空说明还有节点没跑（有中断）；空元组说明跑完了——**一行布尔转人话**。
+
+**运行与观察**（实测）：
+
+```text
+== 2) 状态快照：应停在 awaiting_approval ==
+  status: awaiting_approval
+  interrupt: 有
+```
+
+#### 步骤 4：多模式组合 + resume 续流
+
+**这一步解决什么**：`stream_mode=["updates", "values"]` 一次拿**增量与全量**两种视角；输入换成 `Command(resume=...)`——**恢复也能流式**。
+
+```python
+        print("== 3) 多模式组合 ['updates', 'values']（resume 之后）==")
+        from langgraph.types import Command  # noqa: E402
+
+        for mode, chunk in runtime.graph.stream(
+            Command(resume={"decision": "approve", "comment": "流式实验"}),
+            config=config,
+            context=context,
+            stream_mode=["updates", "values"],
+        ):
+            if mode == "updates":
+                for node, update in chunk.items():
+                    keys = sorted(update.keys()) if isinstance(update, dict) else ["<非dict>"]
+                    print(f"  [updates] 节点 {node:<12} 写入字段: {keys}")
+            else:
+                status = chunk.get("status")
+                export_path = chunk.get("export_path")
+                print(f"  [values ] 全量状态 status={status} export={export_path}")
+```
+
+**逐行讲解**：
+
+- 多模式时每次产出 `(mode, chunk)` **二元组**——按 mode 分发处理，这是组合模式的标准写法。
+- `Command(resume={...})`：approve 以字典形式给出（`parse_resume` 的兼容层在节点里接住它——单元 16 步骤 2）。
+
+**运行与观察**（实测，节选）：
+
+```text
+== 3) 多模式组合 ['updates', 'values']（resume 之后）==
+  [values ] 全量状态 status=awaiting_approval export=None
+  [updates] 节点 review       写入字段: ['budget', 'errors', 'final_report', 'messages', 'review', 'status', 'trace']
+  [values ] 全量状态 status=approved export=None
+  [updates] 节点 export       写入字段: ['budget', 'export_path', 'final_report', 'status', 'trace']
+  [values ] 全量状态 status=approved export=…/data/exports/report-exp22-stream.md
+```
+
+resume 后流里只有 review 和 export 的增量——**前半程不重放**（updates 只报"这一轮新发生的"）；values 每步都给全量，`export_path` 在最后一条才出现。
+
+#### 步骤 5：结论对照与整合
+
+**这一步解决什么**：流式结束后用 `get_state` 对账：最终 status、导出文件、轨迹节点顺序——**流式与普通 invoke 到达同一终点**。
+
+```python
+        print("== 4) 结论对照 ==")
+        final = runtime.graph.get_state(config).values
+        print("  最终 status    :", final.get("status"))
+        print("  导出文件       :", final.get("export_path"))
+        print("  轨迹节点顺序   :", [t.get("node") for t in final.get("trace", [])][:12])
+    finally:
+        runtime.close()
+```
+
+**运行与观察**（实测）：
+
+```text
+== 4) 结论对照 ==
+  最终 status    : approved
+  导出文件       : …/data/exports/report-exp22-stream.md
+  轨迹节点顺序   : ['understand', 'knowledge', 'data', 'data', 'compute', 'compute', 'draft', 'review', 'export']
+```
+
+轨迹里 data/compute 各出现两次（两条 trace 记录：预算与结果各一条）——**trace 是节点级审计，不是去重列表**。
+
+清理临时验证，完整文件应与仓库完全一致：
+
 ```python
 """单元 22（附录）实验：把LangGraph 的流式输出接到主项目工作流上。
 
@@ -214,6 +388,16 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+
+**回看地图**：
+
+| 步骤 | 最终脚本里的位置 |
+| --- | --- |
+| 1 装配 | 路径注入、`MAIN_QUESTION`、config/context |
+| 2 updates | 段 1（节点级进度 + `__interrupt__`） |
+| 3 快照 | 段 2（awaiting_approval 确认） |
+| 4 组合续流 | 段 3（`Command(resume=...)` + 双模式） |
+| 5 对账 | 段 4（get_state 终点核对）+ 整合 |
 
 用法（在 `ops-assistant` 目录执行）：
 
