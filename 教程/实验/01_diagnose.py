@@ -9,6 +9,7 @@ from __future__ import annotations
 import shutil
 import sqlite3
 import sys
+from importlib.metadata import PackageNotFoundError, version as dist_version
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -96,12 +97,17 @@ def check_imports() -> tuple[bool, str]:
     problems: list[str] = []
     for module_name in ("langchain", "langchain_core", "langgraph"):
         try:
-            module = __import__(module_name)
+            __import__(module_name)
         except ImportError:
             problems.append(module_name)
             continue
-        version = getattr(module, "__version__", "未知版本")
-        print(f"    - {module_name} {version}")
+        # 各包版本属性习惯不一（langchain 有 __version__、pydantic 用 VERSION、
+        # langgraph 两者都没有），用标准库 importlib.metadata 按发行版名取版本才可靠。
+        try:
+            ver = dist_version(module_name.replace("_", "-"))
+        except PackageNotFoundError:
+            ver = "未知版本"
+        print(f"    - {module_name} {ver}")
     if problems:
         return False, "无法导入：" + "、".join(problems) + "（先执行 uv sync）"
     return True, "核心依赖可导入"
