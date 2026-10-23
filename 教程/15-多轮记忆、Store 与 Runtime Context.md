@@ -264,11 +264,437 @@ def _prefs_for_user(deps: _Deps, user_id: str, *, thread_id: str) -> dict[str, A
 
 > 这五段合起来就是本单元的全部机制：**短期记忆在检查点里（`last_spec`）、长期记忆在独立表里（`prefs`）、依赖从 context 注入（不入档）**。
 
-### 5.2 可运行实验：`教程/实验/15_memory_store.py`（完整代码）
+### 5.2 可运行实验：`教程/实验/15_memory_store.py`（一步步搭出来）
 
-这个实验**不依赖项目源码、不联网、不需要模型**，把上面五段机制各自缩小成 20 行左右，一次跑完看到六个东西的差别。
+不导入 ops_assistant、不联网：用一个**迷你图**复刻主项目的四层机制（State / Checkpointer / Store / Runtime Context），每层单独观察。分 7 步搭出，最终与仓库完全一致；运行前不需要任何环境变量。
 
-保存到 `教程/实验/15_memory_store.py`：
+#### 步骤 1：常量、上下文与状态——三个"记忆体"先分家
+
+**这一步解决什么**：动手前先划清三块领地——**图状态**（MiniState，进检查点）、**运行时依赖**（MiniContext，不进检查点）、**默认偏好**（DEFAULT_PREFS，兜底值）。
+
+新建 `教程/实验/15_memory_store.py`：
+
+```python
+"""单元 15 实验（步骤 1）：常量、上下文与状态。"""
+
+from __future__ import annotations
+
+import operator
+import sqlite3
+from pathlib import Path
+from typing import Annotated, Any, TypedDict
+
+from langchain_core.messages import AnyMessage
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.runtime import Runtime
+
+OUTPUT_DIR = Path(__file__).resolve().parent / "_output"
+PREFS_DB = OUTPUT_DIR / "preferences.db"
+
+DEFAULT_PREFS: dict[str, str] = {"amount_unit": "元", "default_dimension": "region"}
+VALID_DIMENSIONS = ("region", "product", "month")
+
+
+class MiniContext(TypedDict):
+    """运行时依赖：与主项目 AssistantContext 同构，但只保留必需的三项。"""
+
+    store: "MiniStore"
+    user_id: str
+    note: str
+
+
+class MiniState(TypedDict, total=False):
+    """图状态：messages/trace 带 reducer，last_spec 是跨轮字段。"""
+
+    messages: Annotated[list[AnyMessage], add_messages]
+    question: str
+    spec: dict[str, Any]
+    last_spec: dict[str, Any] | None
+    status: str
+    trace: Annotated[list[dict[str, Any]], operator.add]
+```
+
+**逐行讲解**：
+
+- `MiniContext` 是 **TypedDict 而不是 dataclass**：LangGraph 的 `context_schema` 要一个类型标注，节点从 `runtime.context` 里按键取——**依赖注入的形状**。
+- `last_spec` 放在 MiniState 里（**不是** context 里）：它要**跟着检查点走**，换进程也要在——上一轮的解析结果是"短期记忆"，属于状态。
+- `store`/`user_id` 放在 context 里（**不是**状态里）：连接对象**不能序列化进检查点**，用户身份每轮由外部传入——步骤 4 的快照观察会证明"context 不在状态里"。
+- `DEFAULT_PREFS` 与 `VALID_DIMENSIONS`：偏好的**合法值域**写死在常量里——校验的依据。
+
+**运行与观察**（临时验证）：
+
+```python
+if __name__ == "__main__":
+    print(DEFAULT_PREFS, VALID_DIMENSIONS)
+```
+
+```text
+{'amount_unit': '元', 'default_dimension': 'region'} ('region', 'product', 'month')
+```
+
+#### 步骤 2：`MiniStore`——两列表的教学版长期记忆
+
+**这一步解决什么**：跨 thread 的长期记忆到底是什么？一个 SQLite 两列键值表（namespace + key → value）就足以讲清语义——namespace 按 user_id 隔离。
+
+```python
+class MiniStore:
+    """教学版 Store：SQLite 两列键值表。
+
+    只实现 get/put/all_for_user 三个方法，足以说明"跨 thread 的长期记忆"；
+    不是官方 BaseStore 的完整实现（没有 search/向量检索/TTL/batch）。
+    """
+
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self._conn = sqlite3.connect(str(path), check_same_thread=False)
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS prefs (namespace TEXT NOT NULL, key TEXT NOT NULL, "
+            "value TEXT NOT NULL, PRIMARY KEY (namespace, key))"
+        )
+        self._conn.commit()
+
+    @staticmethod
+    def namespace_for(user_id: str) -> str:
+        return f"users/{user_id}/preferences"
+
+    def put(self, user_id: str, key: str, value: str) -> None:
+        self._conn.execute(
+            "INSERT INTO prefs (namespace, key, value) VALUES (?, ?, ?) "
+            "ON CONFLICT(namespace, key) DO UPDATE SET value = excluded.value",
+            (self.namespace_for(user_id), str(key), str(value)),
+        )
+        self._conn.commit()
+
+    def all_for_user(self, user_id: str) -> dict[str, str]:
+        rows = self._conn.execute(
+            "SELECT key, value FROM prefs WHERE namespace = ?", (self.namespace_for(user_id),)
+        ).fetchall()
+        return {str(key): str(value) for key, value in rows}
+
+    def close(self) -> None:
+        self._conn.close()
+```
+
+**逐行讲解**：
+
+- `namespace_for` 生成 `users/<user_id>/preferences`：**主键是 (namespace, key)**，同一 key 在不同用户下互不干扰——Store 的隔离单位是**命名空间**，不是 thread。
+- `ON CONFLICT ... DO UPDATE`：SQLite 的 upsert——写偏好是"改"不是"增"，幂等。
+- docstring 主动声明"不是完整 BaseStore"：**教学替身的边界要写明**，读者才知道换到官方实现时哪些行为会变。
+
+**运行与观察**（临时验证）：
+
+```python
+    store = MiniStore(PREFS_DB)
+    store.put("u1", "amount_unit", "万元")
+    store.put("u2", "amount_unit", "元")
+    print(store.all_for_user("u1"), store.all_for_user("u2"))
+    store.close()
+```
+
+```text
+{'amount_unit': '万元'} {'amount_unit': '元'}
+```
+
+同名 key、不同用户、各存各的——**长期记忆按人走**。
+
+#### 步骤 3：`effective_prefs` 与 `parse_mini`——偏好合并与极简解析
+
+**这一步解决什么**：偏好不能直接信（库里可能是脏值）——合并默认值 + **非法回退**；解析器只认几个词，够演示就行。
+
+```python
+def effective_prefs(store: MiniStore, user_id: str) -> dict[str, str]:
+    """合并默认值与已存偏好；非法值回退成默认（与主项目同口径）。"""
+    merged = dict(DEFAULT_PREFS)
+    for key, value in store.all_for_user(user_id).items():
+        if key in merged and value:
+            merged[key] = value
+    if merged["default_dimension"] not in VALID_DIMENSIONS:
+        merged["default_dimension"] = DEFAULT_PREFS["default_dimension"]
+    if merged["amount_unit"] not in {"元", "万元"}:
+        merged["amount_unit"] = DEFAULT_PREFS["amount_unit"]
+    return merged
+
+
+def parse_mini(question: str) -> dict[str, Any]:
+    """极简解析：只认两个月份、两个地区和"渠道"这个词。"""
+    spec: dict[str, Any] = {"current_month": None, "regions": [], "dimension": None}
+    for token, month in (("九月", "2026-09"), ("八月", "2026-08")):
+        if token in question:
+            spec["current_month"] = month
+    for region in ("华东", "西南"):
+        if region in question:
+            spec["regions"].append(region)
+    if "渠道" in question:
+        spec["dimension"] = "channel"
+    elif spec["regions"]:
+        spec["dimension"] = "region"
+    return spec
+```
+
+**逐行讲解**：
+
+- `effective_prefs` 三步走：**默认打底 → 已存覆盖 → 非法回退**。注意未知 key 直接被丢弃（`key in merged` 才收）——Store 里多出来的脏键污染不了运行时。
+- `parse_mini` 里"九月和八月都出现时，**后识别的覆盖**"（循环顺序八月在后）——极简实现的已知怪癖，实测 A1 会得到 `2026-08`；主项目的 `parse_question` 没有这个问题（它取"最靠前的月份词"）——**教学替身与生产代码的差异要心里有数**。
+- dimension 的推断顺序：明说"渠道" > 提到地区 > None（留给偏好兜底）。
+
+**运行与观察**（临时验证）：
+
+```python
+    print(parse_mini("2026 年九月销售额比八月变化多少？"))
+    print(parse_mini("那华东地区呢？"))
+    print(parse_mini("2026 年九月销售额多少？"))
+```
+
+```text
+{'current_month': '2026-08', 'regions': [], 'dimension': None}
+{'current_month': None, 'regions': ['华东'], 'dimension': 'region'}
+{'current_month': '2026-09', 'regions': [], 'dimension': None}
+```
+
+注意第三行 dimension=None——**它正等着长期偏好来填**（步骤 4）。
+
+#### 步骤 4：`understand_mini`——三层记忆在一个节点里合流
+
+**这一步解决什么**：本实验的心脏。一轮理解 = **本轮解析**（parse_mini）+ **短期记忆**（last_spec 继承）+ **长期记忆**（prefs 兜底），每用一个记忆就在 trace 里记一笔。
+
+```python
+from langchain_core.messages import AIMessage
+
+
+def understand_mini(state: MiniState, runtime: Runtime[MiniContext]) -> dict[str, Any]:
+    """迷你版 understand：短期记忆（last_spec）+ 长期记忆（store）+ 本轮解析。"""
+    context = runtime.context
+    store = context["store"]
+    user_id = context["user_id"]
+    prefs = effective_prefs(store, user_id)
+    question = str(state.get("question") or "")
+
+    trace: list[dict[str, Any]] = []
+    spec = parse_mini(question)
+    last_spec = state.get("last_spec")
+    if not isinstance(last_spec, dict):
+        last_spec = None
+
+    if spec["current_month"] is None and last_spec and last_spec.get("current_month"):
+        spec["current_month"] = str(last_spec["current_month"])
+        trace.append({"node": "understand", "action": "inherit_period", "from": spec["current_month"]})
+
+    if not spec["regions"] and last_spec and last_spec.get("regions"):
+        spec["regions"] = list(last_spec["regions"])
+        trace.append({"node": "understand", "action": "inherit_regions", "from": spec["regions"]})
+
+    if spec["dimension"] is None:
+        spec["dimension"] = prefs["default_dimension"]
+        trace.append(
+            {
+                "node": "understand",
+                "action": "used_preference",
+                "key": "default_dimension",
+                "value": prefs["default_dimension"],
+            }
+        )
+
+    needs_month = spec["current_month"] is None
+    if needs_month:
+        answer = "请说明要分析的月份（例如“2026 年九月”）。"
+        status = "clarification"
+    else:
+        answer = f"已记录：{spec['current_month']} / {spec['dimension']} / {spec['regions']}"
+        status = "answered"
+
+    update: dict[str, Any] = {
+        "spec": spec,
+        "status": status,
+        "messages": [AIMessage(content=answer)],
+        "trace": trace,
+    }
+    if spec["current_month"]:
+        update["last_spec"] = dict(spec)
+    return update
+```
+
+**逐行讲解**：
+
+- 节点签名多出第二个参数 `runtime: Runtime[MiniContext]`：**context 从 runtime 进，不从 state 进**——这是它与单元 06～08 节点的唯一区别。
+- 三层记忆的**优先级**：本轮解析 > 短期继承 > 长期偏好——用户**这轮明说的**永远最优先，没说的才问记忆要。
+- `trace.append(...)` 每次记忆使用都记一笔（inherit_period / inherit_regions / used_preference）——**记忆的使用可审计**，这是主项目 trace 设计的延续。
+- `update["last_spec"] = dict(spec)` 只有拿到月份才写：**没解析出任何东西就不污染短期记忆**（clarification 轮不覆盖上一轮的好 spec）。
+
+#### 步骤 5：装配与驱动——`build_graph` / `config_for` / `run_turn`
+
+**这一步解决什么**：把图编译起来（带 checkpointer；store 能不能塞进 compile **因版本而异**，要有回退），并写一个统一的"跑一轮"驱动：每轮**现场组装 context** 注入。
+
+```python
+from langchain_core.messages import HumanMessage
+from langgraph.checkpoint.memory import InMemorySaver
+
+
+def build_graph(checkpointer: Any | None, store: MiniStore | None) -> tuple[Any, bool]:
+    """装配迷你图；返回 (编译后的图, 是否成功把 store 传进了 compile)。"""
+    builder = StateGraph(MiniState, context_schema=MiniContext)
+    builder.add_node("understand", understand_mini)
+    builder.add_edge(START, "understand")
+    builder.add_edge("understand", END)
+
+    if store is not None:
+        try:
+            return builder.compile(checkpointer=checkpointer, store=store), True
+        except Exception:
+            # 教学适配器不是官方 BaseStore 时会走到这里：退化为只注入 checkpointer，
+            # 节点仍然从 context 读到同一个 store，读写行为不变。
+            pass
+    return builder.compile(checkpointer=checkpointer), False
+
+
+def config_for(thread_id: str, user_id: str) -> dict[str, Any]:
+    """一次 invoke 的配置：thread_id 决定检查点归属，user_id 只影响偏好。"""
+    return {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+
+
+def run_turn(
+    graph: Any,
+    store: MiniStore,
+    *,
+    thread_id: str,
+    user_id: str,
+    question: str,
+) -> dict[str, Any]:
+    """跑一轮并返回图状态（含 last_spec 与 trace）。"""
+    context: MiniContext = {"store": store, "user_id": user_id, "note": "本对象不入检查点"}
+    config = config_for(thread_id, user_id)
+    return graph.invoke(
+        {"question": question, "messages": [HumanMessage(content=question)]},
+        config=config,
+        context=context,
+    )
+```
+
+**逐行讲解**：
+
+- `StateGraph(MiniState, context_schema=MiniContext)`：**context 也要在图上声明**——不声明，节点签名里的 runtime 参数不会被注入。
+- `compile(..., store=store)` 的 try/except：教学版 MiniStore **不是**官方 BaseStore 子类，某些版本会在编译期校验失败——回退后节点照样从 context 拿到 store（**行为不变**，注入路径不同而已），返回的 bool 供 main 汇报。
+- `run_turn` 每轮新建 context 字典：**context 是"每次调用"的东西**，不是全局单例——note 字段那句"本对象不入检查点"就是给步骤 6 的快照观察埋的伏笔。
+- `config` 带 thread_id（检查点归属）与 user_id（偏好归属）：**两把不同的钥匙开两扇不同的门**。
+
+#### 步骤 6：`main()` 上半——短期继承、跨 thread 失忆、长期偏好
+
+**这一步解决什么**：三组对照实验：①同一 thread 追问（last_spec 接住）；②换 thread 同样追问（失忆）；③换 user（偏好变）。
+
+```python
+def main() -> int:
+    """按五段演示：跨轮继承 → 长期偏好 → 快照内容 → 无检查点 → store 注入结果。"""
+    print("== 单元 15 实验：多轮记忆、Store 与 Runtime Context ==")
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    if PREFS_DB.exists():
+        PREFS_DB.unlink()
+    store = MiniStore(PREFS_DB)
+    store.put("demo-user", "default_dimension", "region")
+
+    graph, store_injected = build_graph(InMemorySaver(), store)
+
+    print("\n== 1) 同一 thread 的追问：last_spec 从检查点里读回 ==")
+    first = run_turn(
+        graph, store, thread_id="thread-a", user_id="demo-user",
+        question="2026 年九月销售额比八月变化多少？",
+    )
+    follow = run_turn(
+        graph, store, thread_id="thread-a", user_id="demo-user",
+        question="那华东地区呢？",
+    )
+    print("A1 spec =", first["spec"])
+    print("A1 trace =", first["trace"])
+    print("A2 spec =", follow["spec"])
+    print("A2 trace =", follow["trace"])
+
+    print("\n== 2) 另一个 thread 的同一句追问：没有 last_spec 可继承 ==")
+    lonely = run_turn(
+        graph, store, thread_id="thread-b", user_id="demo-user",
+        question="那华东地区呢？",
+    )
+    print("B1 status =", lonely["status"])
+    print("B1 spec =", lonely["spec"])
+
+    print("\n== 3) 长期记忆：换 thread 也生效（按 user_id，不看 thread） ==")
+    store.put("vip-user", "default_dimension", "product")
+    print("demo-user 偏好 =", effective_prefs(store, "demo-user"))
+    print("vip-user  偏好 =", effective_prefs(store, "vip-user"))
+    vip = run_turn(
+        graph, store, thread_id="thread-c", user_id="vip-user",
+        question="2026 年九月销售额多少？",
+    )
+    print("C1 spec =", vip["spec"])
+    print("C1 trace =", vip["trace"])
+```
+
+**逐行讲解**：
+
+- 开头 `PREFS_DB.unlink()`：**每跑一次都从干净偏好库开始**——实验可重复。
+- 三组对照的变量控制堪称模板：①②同 user 不同 thread（短期记忆差异）；①③同图不同 user（长期偏好差异）。
+- `run_turn` 复用让每组实验只剩"参数不同"——**实验代码的噪音被驱动函数吃掉了**。
+
+**运行与观察**（实测 2026-10-23）：
+
+```text
+== 1) 同一 thread 的追问：last_spec 从检查点里读回 ==
+A1 spec = {'current_month': '2026-08', 'regions': [], 'dimension': 'region'}
+A1 trace = [{'node': 'understand', 'action': 'used_preference', …}]
+A2 spec = {'current_month': '2026-08', 'regions': ['华东'], 'dimension': 'region'}
+A2 trace = [{…'used_preference'…}, {…'inherit_period', 'from': '2026-08'}]
+
+== 2) 另一个 thread 的同一句追问：没有 last_spec 可继承 ==
+B1 status = clarification
+B1 spec = {'current_month': None, 'regions': ['华东'], 'dimension': 'region'}
+
+== 3) 长期记忆：换 thread 也生效（按 user_id，不看 thread） ==
+demo-user 偏好 = {'amount_unit': '元', 'default_dimension': 'region'}
+vip-user  偏好 = {'amount_unit': '元', 'default_dimension': 'product'}
+C1 spec = {'current_month': '2026-09', 'regions': [], 'dimension': 'product'}
+```
+
+三行结论：A2 继承了月份（inherit_period）；B1 换 thread 立刻 clarification（**短期记忆贴 thread**）；C1 的问题只写了月份、dimension 由 vip-user 的偏好填成 product（**长期记忆贴 user**）。另注意 A1 是 2026-08——步骤 3 讲过的"后识别覆盖"怪癖，如实呈现。
+
+#### 步骤 7：`main()` 下半与整合——快照、无检查点、注入汇报
+
+**这一步解决什么**：最后三问：检查点里到底存了什么（context 在不在）？没有 checkpointer 会怎样？store 塞进 compile 成功了吗？
+
+```python
+    print("\n== 4) 检查点里到底存了什么（context 不在里面） ==")
+    snapshot = graph.get_state(config_for("thread-a", "demo-user"))
+    print("状态通道 =", sorted(snapshot.values.keys()))
+    print("context 是否进了状态 =", "store" in snapshot.values)
+    print("next =", snapshot.next)
+
+    print("\n== 5) 没有 checkpointer：同一段追问立刻失忆 ==")
+    stateless, _ = build_graph(None, store)
+    run_turn(stateless, store, thread_id="thread-d", user_id="demo-user",
+             question="2026 年九月销售额比八月变化多少？")
+    lost = run_turn(stateless, store, thread_id="thread-d", user_id="demo-user",
+                    question="那华东地区呢？")
+    print("D2 status =", lost["status"])
+    print("D2 spec =", lost["spec"])
+
+    print("\n== 6) 把教学版 Store 传进 compile() 的结果 ==")
+    if store_injected:
+        print("store 注入 compile：成功（你的版本接受了这个适配器）")
+    else:
+        print("store 注入 compile：回退为只注入 checkpointer（适配器不是官方 BaseStore）")
+    print("→ 无论哪条分支，节点都从 context 读同一个 store，偏好行为不变。")
+
+    store.close()
+    return 0
+```
+
+（文件末尾补 `if __name__ == "__main__": raise SystemExit(main())`。）
+
+**逐行讲解**：
+
+- 段 4：快照的 values 里**只有状态通道的键**（last_spec/messages/…），`"store" in snapshot.values` 是 False——**context 活在进程里，不进检查点**，与步骤 1 的分家设计互相印证。
+- 段 5：`build_graph(None, store)` 造一个**无检查点**的图——同 thread 两连问，第二轮立刻 clarification：短期记忆的载体就是检查点，没有它就没有"上一轮"。
+- 段 6：`store_injected` 的两条分支都**不影响偏好行为**——注入方式是实现细节，语义靠 context 保证。
+
+清理各步临时验证，完整文件应与仓库完全一致：
 
 ```python
 """单元 15 实验：State / Checkpointer / thread / Store / Runtime Context 的分工。
@@ -553,6 +979,20 @@ def main() -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 ```
+
+**回看地图**：
+
+| 步骤 | 最终脚本里的位置 |
+| --- | --- |
+| 1 分家 | 常量、`MiniContext`、`MiniState` |
+| 2 长期记忆 | `MiniStore`（namespace 键值表） |
+| 3 合并与解析 | `effective_prefs()`、`parse_mini()` |
+| 4 心脏 | `understand_mini()`（三层记忆 + trace 审计） |
+| 5 装配 | `build_graph()`、`config_for()`、`run_turn()` |
+| 6 对照实验 | `main()` 段 1–3（继承/失忆/偏好） |
+| 7 见底 | `main()` 段 4–6（快照/无检查点/注入汇报）+ 整合 |
+
+运行与验收：见 §5.3 的命令。核心验收：A2 有 inherit_period、B1 clarification、C1 的 dimension=product、`"store" in snapshot.values` 为 False——四件事都对，四层分工就真的看懂了。
 
 ### 5.3 运行命令
 
