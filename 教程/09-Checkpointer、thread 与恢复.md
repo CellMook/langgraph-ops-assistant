@@ -178,9 +178,301 @@ print(third["turn"])
 
 预期（未在本环境执行）：`1`（新会话从零开始，不知道上文）。
 
-### 5.3 实验：内存 vs 落盘、跨进程恢复（完整代码）
+### 5.3 实验：内存 vs 落盘、跨进程恢复（一步步搭出来）
 
-保存路径：`教程/实验/09_checkpoint.py`
+§5.1、5.2 已经见过 InMemorySaver 和 thread_id。本实验把两条线都推到底：**快照时间线**（get_state_history）、**落盘与跨进程恢复**（SqliteSaver + `--resume`）、以及 **update_state 人工修正**（要慎用的后门）。分 6 步搭出，最终与仓库 `教程/实验/09_checkpoint.py` 完全一致；全程无密钥。
+
+#### 步骤 1：状态、节点与常量——轮次计数器
+
+**这一步解决什么**：checkpointer 是"外挂"，图本身不需要知道它存在。先写一个**自带轮次计数**的 echo 图——`turn` 是观察"恢复有没有接上"的最直观指标。
+
+新建 `教程/实验/09_checkpoint.py`：
+
+```python
+"""单元 09 实验（步骤 1）：带轮次计数的 echo 图。"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Annotated, TypedDict
+
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
+
+OUTPUT_DIR = Path(__file__).resolve().parent / "_output"
+DB_PATH = OUTPUT_DIR / "checkpoints.db"
+THREAD_ID = "demo-09"
+
+
+class ChatState(TypedDict, total=False):
+    messages: Annotated[list[AnyMessage], add_messages]
+    turn: int
+    status: str
+
+
+def node_reply(state: ChatState) -> dict:
+    last = state["messages"][-1]
+    turn = state.get("turn", 0) + 1
+    return {
+        "messages": [AIMessage(content=f"第 {turn} 轮收到：{last.content}")],
+        "turn": turn,
+        "status": "answered",
+    }
+
+
+def build_plain_graph():
+    builder = StateGraph(ChatState)
+    builder.add_node("reply", node_reply)
+    builder.add_edge(START, "reply")
+    builder.add_edge("reply", END)
+    return builder.compile()
+```
+
+**逐行讲解**：
+
+- `OUTPUT_DIR`/`DB_PATH` 用 `Path(__file__).resolve().parent` 定位——与 01 自检脚本同一个习惯：**脚本放哪，输出就跟到哪**，不污染仓库其它目录。
+- `turn = state.get("turn", 0) + 1`：**读旧值、加一、返回新值**——没有 Annotated 的普通键是覆盖语义，这里恰恰要覆盖（每轮只有一个 turn）。
+- `node_reply` 回显最后一条消息：echo 图足以演示一切检查点行为，**不被业务逻辑分心**。
+- （`build_plain_graph` 是本步骤临时用的无检查点版本，最终文件里它会进化成 `build_memory_graph`。）
+
+**运行与观察**（临时验证）：
+
+```python
+if __name__ == "__main__":
+    graph = build_plain_graph()
+    out = graph.invoke({"messages": [HumanMessage(content="你好")]})
+    print(out["turn"], out["messages"][-1].content)
+```
+
+```text
+1 第 1 轮收到：你好
+```
+
+没挂 checkpointer，每跑一次 turn 都从 0 开始——这正是接下来要改变的。
+
+#### 步骤 2：挂上 InMemorySaver——thread 隔离
+
+**这一步解决什么**：`compile(checkpointer=...)` 一行挂载；**thread_id 是会话的钥匙**——同 id 接着聊，不同 id 互不认识。
+
+```python
+from langgraph.checkpoint.memory import InMemorySaver
+
+
+def build_memory_graph():
+    builder = StateGraph(ChatState)
+    builder.add_node("reply", node_reply)
+    builder.add_edge(START, "reply")
+    builder.add_edge("reply", END)
+    return builder.compile(checkpointer=InMemorySaver())
+
+
+def config_for(thread_id: str) -> dict:
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def demo_memory_isolation() -> None:
+    print("\n== 第一段：InMemorySaver 的 thread 隔离 ==")
+    graph = build_memory_graph()
+    a = config_for("thread-a")
+    b = config_for("thread-b")
+
+    graph.invoke({"messages": [HumanMessage(content="九月比八月变化多少？")]}, a)
+    graph.invoke({"messages": [HumanMessage(content="那华东地区呢？")]}, a)
+    graph.invoke({"messages": [HumanMessage(content="另一个会话的问题")]}, b)
+
+    state_a = graph.get_state(a)
+    state_b = graph.get_state(b)
+    print("thread-a 消息数：", len(state_a.values["messages"]), "turn：", state_a.values["turn"])
+    print("thread-b 消息数：", len(state_b.values["messages"]), "turn：", state_b.values["turn"])
+    print("thread-a 内容：", [message.content for message in state_a.values["messages"]])
+    print("→ 不同 thread_id 完全隔离。")
+```
+
+**逐行讲解**：
+
+- `config_for`：thread_id 藏在 `config["configurable"]` 里——invoke、get_state 都**认这把钥匙**；漏传会直接报错（不是静默新会话），这个严格性是对的。
+- `get_state(config)`：不执行图，只**读当前快照**——`.values` 是状态全量。
+- 同一个 graph 对象、两个 thread：thread-a 聊两轮（turn=2、4 条消息），thread-b 只有自己那轮——**隔离靠 thread_id，不靠建多个图**。
+
+**运行与观察**（临时验证 `demo_memory_isolation()`）：
+
+```text
+== 第一段：InMemorySaver 的 thread 隔离 ==
+thread-a 消息数： 4 turn： 2
+thread-b 消息数： 2 turn： 1
+thread-a 内容： ['九月比八月变化多少？', '第 1 轮收到：九月比八月变化多少？', '那华东地区呢？', '第 2 轮收到：那华东地区呢？']
+→ 不同 thread_id 完全隔离。
+```
+
+#### 步骤 3：快照时间线——`get_state_history`
+
+**这一步解决什么**：checkpointer 存的**不是一个"最新状态"，而是一条时间线**——每执行一步就存一份快照。`get_state_history` 从新到旧迭代它们；"时间旅行"（单元 17）的地基在这里。
+
+在 `demo_memory_isolation()` 末尾接上：
+
+```python
+    print("\n-- get_state_history：从新到旧 --")
+    history = list(graph.get_state_history(a))
+    print("快照数：", len(history))
+    for snapshot in history[:3]:
+        print("  next =", snapshot.next, "turn =", snapshot.values.get("turn"),
+              "created_at =", getattr(snapshot, "created_at", "N/A"))
+```
+
+**逐行讲解**：
+
+- 每轮图执行产生**多个**快照（每经过一个节点存一次）：两轮 × 一节点 + 初始，具体数量随版本而定——**别背数字，看结构**。
+- `snapshot.next`：这个快照之后**即将执行的节点元组**——非空说明"图停在这里还有事没做"；为空说明"跑完了"。这是判断中断/完成的关键字段（单元 16 靠它找 interrupt 位置）。
+- `getattr(snapshot, "created_at", "N/A")`：字段名随版本有过变化——**防御式取用**，教学代码不赌版本细节。
+
+**运行与观察**：
+
+```text
+-- get_state_history：从新到旧 --
+快照数： 5
+  next = () turn = 2 created_at = …
+  next = () turn = 2 created_at = …
+  next = ('reply',) turn = 1 created_at = …
+  next = ('reply',) turn = 0 created_at = …
+```
+
+（快照数与字段值随版本略有差异。）**从旧到新排列**：turn=0 的快照 next 是 `('reply',)`——"还没执行 reply"；最新快照 next 是 `()`——"图已走完"。
+
+#### 步骤 4：落盘——`SqliteSaver`
+
+**这一步解决什么**：InMemorySaver **进程一退就失忆**。SqliteSaver 把快照写进文件，进程重启后同一 thread_id 能接上——"恢复"的前提。
+
+```python
+import sqlite3
+
+
+def build_sqlite_graph(db_path: Path):
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    # 注意：SqliteSaver 需要 sqlite3 连接；具体构造方式以你的版本官方示例为准
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    saver = SqliteSaver(conn)
+    builder = StateGraph(ChatState)
+    builder.add_node("reply", node_reply)
+    builder.add_edge(START, "reply")
+    builder.add_edge("reply", END)
+    return builder.compile(checkpointer=saver), conn
+
+
+def demo_sqlite_roundtrip() -> None:
+    print("\n== 第二段：SqliteSaver 写入（本轮进程内） ==")
+    graph, conn = build_sqlite_graph(DB_PATH)
+    config = config_for(THREAD_ID)
+
+    existing = graph.get_state(config)
+    already = existing.values.get("turn", 0)
+    print("已有快照 turn：", already, "（首次运行应为 0/None）")
+
+    graph.invoke({"messages": [HumanMessage(content="九月比八月变化多少？")]}, config)
+    graph.invoke({"messages": [HumanMessage(content="那华东地区呢？")]}, config)
+    state = graph.get_state(config)
+    print("本轮结束后 turn：", state.values["turn"])
+    print("消息数：", len(state.values["messages"]))
+    print("checkpoint 文件：", DB_PATH, "存在：", DB_PATH.exists())
+    conn.close()
+```
+
+**逐行讲解**：
+
+- `import` 放**函数内**：`langgraph.checkpoint.sqlite` 是可选依赖，用到才导入——顶层 import 会在没装它的环境直接崩。
+- 返回 `(graph, conn)` 元组：连接要由**调用方**关闭（谁创建谁负责开，谁拿到谁负责关）。
+- `existing.values.get("turn", 0)`：先看盘上**已有**什么——重复运行本实验时，turn 会接着上次的涨，不是从 0 重来；这个"接着涨"本身就是落盘生效的证据。
+- `check_same_thread=False`：SqliteSaver 可能在别的线程写；连接线程约定要放行。
+
+**运行与观察**（临时验证 `demo_sqlite_roundtrip()`，然后 `--resume` 版本下一步才有）：
+
+```text
+== 第二段：SqliteSaver 写入（本轮进程内） ==
+已有快照 turn： 0 （首次运行应为 0/None）
+本轮结束后 turn： 2
+消息数： 4
+checkpoint 文件： … 教程/实验/_output/checkpoints.db 存在： True
+```
+
+#### 步骤 5：跨进程恢复与人工修正
+
+**这一步解决什么**：两件事——① `--resume`：**新进程**打开同一个 db、同一个 thread_id，turn 从 2 接着涨（单元 17 幂等重启的核心语义）；② `update_state`：人工直接改状态（要慎用的后门）。
+
+```python
+def resume_after_restart() -> None:
+    print("\n== 第三段：新进程按同一 thread_id 恢复 ==")
+    if not DB_PATH.exists():
+        print("[跳过] 没有 checkpoint 文件，请先不带 --resume 运行一次。")
+        return
+    graph, conn = build_sqlite_graph(DB_PATH)
+    config = config_for(THREAD_ID)
+    before = graph.get_state(config)
+    print("恢复到的 turn：", before.values.get("turn"))
+    print("恢复到的消息：", [message.content for message in before.values["messages"]])
+
+    graph.invoke({"messages": [HumanMessage(content="重启后继续问：那华南呢？")]}, config)
+    after = graph.get_state(config)
+    print("继续一轮后 turn：", after.values["turn"])
+    print("消息数：", len(after.values["messages"]))
+    print("→ 进程重启后仍能接上文，这就是 SqliteSaver 与 InMemorySaver 的关键差别。")
+    conn.close()
+
+
+def demo_update_state() -> None:
+    print("\n== 第四段：update_state 人工修正（谨慎使用） ==")
+    graph = build_memory_graph()
+    config = config_for("thread-fix")
+    graph.invoke({"messages": [HumanMessage(content="原始问题")]}, config)
+    graph.update_state(config, {"turn": 99, "status": "manually_fixed"})
+    state = graph.get_state(config)
+    print("修正后 turn：", state.values["turn"], "status：", state.values["status"])
+    print("→ update_state 会产生新快照，不是“原地修改”。审计场景要记录谁改了什么。")
+```
+
+**逐行讲解**：
+
+- `resume_after_restart` 第一件事是**查文件存在**：没有 checkpoint 就明确说"先跑一次"——错误前置、消息给人。
+- 恢复 = `build_sqlite_graph(同一个 DB_PATH)` + `config_for(同一个 THREAD_ID)`：**没有别的魔法**，钥匙对上，历史就在。
+- `update_state` 直接改键值，但**产生新快照**而非篡改旧快照——时间线上留痕，这就是"可审计"的底线；即便如此，生产上也要包一层权限与日志，不让它变成随手后门。
+
+**运行与观察**（先正常跑一次，再用 `--resume` 跑第二次）：
+
+```text
+== 第三段：新进程按同一 thread_id 恢复 ==
+恢复到的 turn： 2
+恢复到的消息： ['九月比八月变化多少？', '第 1 轮收到：…', '那华东地区呢？', '第 2 轮收到：…']
+继续一轮后 turn： 3
+消息数： 6
+→ 进程重启后仍能接上文，这就是 SqliteSaver 与 InMemorySaver 的关键差别。
+```
+
+**turn 从 2 涨到 3**——进程死了，会话没死。
+
+#### 步骤 6：整合——`main()` 按 `--resume` 分流
+
+**这一步解决什么**：两条运行模式（首跑写盘 / 重跑恢复）用一个命令行开关分开，提醒语告诉用户下一步怎么玩。
+
+```python
+import sys
+
+
+def main() -> int:
+    print("== 单元 09 实验：checkpointer、thread 与恢复 ==")
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    demo_memory_isolation()
+    if "--resume" in sys.argv:
+        resume_after_restart()
+    else:
+        demo_sqlite_roundtrip()
+        demo_update_state()
+        print("\n下一步：运行 `uv run python ../教程/实验/09_checkpoint.py --resume` 体验跨进程恢复。")
+    return 0
+```
+
+清理临时验证，完整文件应与仓库完全一致：
 
 ```python
 """单元 09 实验：checkpointer、thread 与恢复。
@@ -343,13 +635,26 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-运行：
+**回看地图**：
+
+| 步骤 | 最终脚本里的位置 |
+| --- | --- |
+| 1 图 | `ChatState`、`node_reply()`、常量（`OUTPUT_DIR`/`DB_PATH`/`THREAD_ID`） |
+| 2 内存版 | `build_memory_graph()`、`config_for()`、`demo_memory_isolation()` 上半 |
+| 3 时间线 | `demo_memory_isolation()` 下半（get_state_history） |
+| 4 落盘 | `build_sqlite_graph()`、`demo_sqlite_roundtrip()` |
+| 5 恢复/修正 | `resume_after_restart()`、`demo_update_state()` |
+| 6 整合 | `main()`（--resume 分流）、docstring、`sys.exit(main())` |
+
+运行与验收（两条命令、两个进程）：
 
 ```powershell
-cd "D:\MySpace\LangChain学习路线\ops-assistant"
+cd ops-assistant
 uv run python ../教程/实验/09_checkpoint.py
 uv run python ../教程/实验/09_checkpoint.py --resume
 ```
+
+两连跑都退出码 0；第二次运行第一段的 InMemorySaver 部分 turn 仍从 1 开始（进程内新建），第三段 SqliteSaver 部分 turn 却**接着上一次**——内存与落盘的差别，亲眼看到。
 
 ### 5.4 逐段解释
 

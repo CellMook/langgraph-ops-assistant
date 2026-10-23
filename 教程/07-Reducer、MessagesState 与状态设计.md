@@ -236,9 +236,299 @@ def node_drop(state: ChatState) -> dict:
     return {"messages": [RemoveMessage(id="m2")]}
 ```
 
-### 5.3 实验：修掉单元 06 的 `trace` 覆盖（完整代码）
+### 5.3 实验：修掉单元 06 的 `trace` 覆盖（一步步搭出来）
 
-保存路径：`教程/实验/07_reducers.py`
+单元 06 结尾留下的问题——三个节点只留最后一条 trace——本实验用**一行注解**修掉它，再用两组对照实验把"覆盖 vs 合并"的机制彻底看清。分 6 步搭出，最终与仓库 `教程/实验/07_reducers.py` 完全一致；全程无密钥。
+
+#### 步骤 1：状态加注解——一行修掉覆盖 bug
+
+**这一步解决什么**：单元 06 的 `trace` 之所以被覆盖，是因为**默认 reducer 是"整个键覆盖"**。修法不是改节点函数，而是**在状态定义上声明合并方式**：`Annotated[类型, reducer函数]`。
+
+新建 `教程/实验/07_reducers.py`：
+
+```python
+"""单元 07 实验（步骤 1）：给状态声明合并方式。"""
+
+from __future__ import annotations
+
+import operator
+from typing import Annotated, TypedDict
+
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.graph.message import add_messages
+
+SAMPLE_MONTHS = {
+    "2026-09": {"net_cents": 1286500},
+    "2026-08": {"net_cents": 1190000},
+}
+
+
+class OpsState(TypedDict, total=False):
+    """对照状态：trace 用 operator.add，messages 用 add_messages，status 默认覆盖。"""
+
+    question: str
+    spec: dict
+    calculation: dict
+    status: str
+    trace: Annotated[list[dict], operator.add]
+    messages: Annotated[list, add_messages]
+```
+
+**逐行讲解**：
+
+- `trace: Annotated[list[dict], operator.add]`：`Annotated[类型, 元数据]` 本是类型标注语法，LangGraph 拿第二个位置当 **reducer**——节点返回 `[新条目]` 时，框架执行 `旧值 + 新值`（列表拼接）而不是覆盖。**与单元 06 的差异就这一行**。
+- `messages: Annotated[list, add_messages]`：消息专用 reducer——比 `operator.add` 聪明（按 id 去重/替换/删除），步骤 4、5 专门实验它。
+- `status` 故意**不加注解**：阶段标记就该"后者覆盖前者"（running → answered）——三种语义并存一个状态里，各自声明。
+- `operator` 与 `Annotated` 是标准库；`add_messages` 来自 langgraph。
+
+**运行与观察**（临时验证——注解确实被框架读到）：
+
+```python
+if __name__ == "__main__":
+    print(OpsState.__annotations__["trace"])
+```
+
+```text
+(list[dict], <built-in function add>)
+```
+
+注解只是"写在类型上的元数据"，**是 StateGraph 编译时读它、执行时用它的**。
+
+#### 步骤 2：两节点 + 图——验证修复
+
+**这一步解决什么**：节点函数**照旧返回一整条新 trace 列表**（不用改！），跑一遍看它是否被**追加**而不是覆盖。
+
+```python
+def node_parse(state: OpsState) -> dict:
+    spec = {"current_month": "2026-09", "previous_month": "2026-08", "metric": "net_sales"}
+    return {
+        "spec": spec,
+        "status": "running",
+        "trace": [{"node": "parse", "action": "parsed_spec"}],
+        "messages": [HumanMessage(content=state.get("question", ""), id="q1")],
+    }
+
+
+def node_compute(state: OpsState) -> dict:
+    current = SAMPLE_MONTHS["2026-09"]["net_cents"]
+    previous = SAMPLE_MONTHS["2026-08"]["net_cents"]
+    delta = current - previous
+    pct = None if previous == 0 else round(delta / abs(previous), 4)
+    return {
+        "calculation": {
+            "current_cents": current,
+            "previous_cents": previous,
+            "delta_cents": delta,
+            "pct_change": pct,
+        },
+        "status": "answered",
+        "trace": [{"node": "compute", "action": "calculated", "delta_cents": delta}],
+        "messages": [AIMessage(content=f"差额 {delta} 分，变化率 {pct:.2%}。", id="a1")],
+    }
+
+
+from langgraph.graph import END, START, StateGraph
+
+
+def build_graph():
+    builder = StateGraph(OpsState)
+    builder.add_node("parse", node_parse)
+    builder.add_node("compute", node_compute)
+    builder.add_edge(START, "parse")
+    builder.add_edge("parse", "compute")
+    builder.add_edge("compute", END)
+    return builder.compile()
+```
+
+**逐行讲解**：
+
+- 两个节点的 trace 仍然各是 `[单条]` 新列表——**reducer 的意义正是让节点不用关心合并**，只管报告自己这一段。
+- 消息都带 `id="q1"`/`id="a1"`：`add_messages` 的魔法靠 id 起作用，先养成"每条消息都有 id"的习惯。
+
+**运行与观察**（临时验证）：
+
+```python
+    final = build_graph().invoke(
+        {"question": "九月比八月变化多少？", "status": "running", "trace": [], "messages": []}
+    )
+    print([item["node"] for item in final["trace"]])
+    print(final["status"])
+    print([type(m).__name__ for m in final["messages"]])
+```
+
+```text
+['parse', 'compute']
+answered
+['HumanMessage', 'AIMessage']
+```
+
+**单元 06 的 bug 修好了**：trace 两条都在；status 正常覆盖成 answered；messages 也两条齐全。
+
+#### 步骤 3：对照组——同一个键，覆盖 vs 追加
+
+**这一步解决什么**："修好了"还不够，要**隔离变量**看清机制：同一个图、同两个节点，一个键不加注解、一个键加 `operator.add`，结果并排看。
+
+```python
+import json
+
+
+def demo_operator_add_vs_plain() -> None:
+    print("\n== 第三段：operator.add vs 默认覆盖 ==")
+
+    class PlainState(TypedDict, total=False):
+        plain: list[str]
+        added: Annotated[list[str], operator.add]
+
+    def node_a(state: PlainState) -> dict:
+        return {"plain": ["a"], "added": ["a"]}
+
+    def node_b(state: PlainState) -> dict:
+        return {"plain": ["b"], "added": ["b"]}
+
+    builder = StateGraph(PlainState)
+    builder.add_node("a", node_a)
+    builder.add_node("b", node_b)
+    builder.add_edge(START, "a")
+    builder.add_edge("a", "b")
+    builder.add_edge("b", END)
+    result = builder.compile().invoke({"plain": [], "added": []})
+    print(json.dumps(result, ensure_ascii=False))
+```
+
+**逐行讲解**：
+
+- `PlainState` 里 `plain` 与 `added` **唯一区别是一个 Annotated**——教科书式控制变量。
+- 状态类可以**在函数里就地定义**（demo 专用小图不必升到模块级）。
+
+**运行与观察**（临时验证 `demo_operator_add_vs_plain()`）：
+
+```text
+== 第三段：operator.add vs 默认覆盖 ==
+{"plain": ["b"], "added": ["a", "b"]}
+```
+
+`plain` 只剩 `["b"]`（b 覆盖 a），`added` 是 `["a", "b"]`（追加）——一句话讲清全部机制。
+
+#### 步骤 4：`add_messages` 魔法之一——同 id 替换
+
+**这一步解决什么**：`operator.add` 只会无脑拼接；**消息场景需要"改写历史"**——用户编辑了刚才的提问，正确语义是**替换**那条旧消息，而不是追加一条新的。`add_messages` 按 id 实现。
+
+```python
+from langchain_core.messages import RemoveMessage
+
+
+def demo_messages() -> None:
+    print("\n== 第二段：add_messages 的“同 id 替换” ==")
+
+    class ChatState(TypedDict, total=False):
+        messages: Annotated[list, add_messages]
+
+    def node_first(state: ChatState) -> dict:
+        return {"messages": [HumanMessage(content="原始问题", id="m1")]}
+
+    def node_edit(state: ChatState) -> dict:
+        return {"messages": [HumanMessage(content="编辑后的问题", id="m1")]}
+
+    builder = StateGraph(ChatState)
+    builder.add_node("first", node_first)
+    builder.add_node("edit", node_edit)
+    builder.add_edge(START, "first")
+    builder.add_edge("first", "edit")
+    builder.add_edge("edit", END)
+    result = builder.compile().invoke({"messages": []})
+    print("同 id 写入后条数：", len(result["messages"]))
+    print("内容：", [message.content for message in result["messages"]])
+```
+
+**逐行讲解**：
+
+- 两个节点写**同一个 id="m1"** 的 HumanMessage、内容不同——`add_messages` 的裁决是**保留一条、内容取后写**。
+- 这就是项目里"编辑仅正文末尾"那条契约的底层机制：编辑 = 同 id 再写一次。
+
+**运行与观察**（临时验证，在 `demo_messages` 末尾先 return）：
+
+```text
+== 第二段：add_messages 的“同 id 替换” ==
+同 id 写入后条数： 1
+内容： ['编辑后的问题']
+```
+
+一条，不是两条——替换发生了。
+
+#### 步骤 5：`add_messages` 魔法之二——RemoveMessage 删除
+
+**这一步解决什么**：上下文窗口是稀缺资源，**修剪历史**（删旧消息）是长会话的日常。`RemoveMessage(id=...)` 是 `add_messages` 约定的"删除指令"。
+
+在 `demo_messages()` 里**接续**补上删除实验（替换实验之后）：
+
+```python
+    def node_drop(state: ChatState) -> dict:
+        return {"messages": [RemoveMessage(id="m1")]}
+
+    builder2 = StateGraph(ChatState)
+    builder2.add_node("first", node_first)
+    builder2.add_node("drop", node_drop)
+    builder2.add_edge(START, "first")
+    builder2.add_edge("first", "drop")
+    builder2.add_edge("drop", END)
+    dropped = builder2.compile().invoke({"messages": [HumanMessage(content="历史消息", id="old")]})
+    print("RemoveMessage 之后条数：", len(dropped["messages"]))
+    print("内容：", [message.content for message in dropped["messages"]])
+```
+
+**逐行讲解**：
+
+- `RemoveMessage(id="m1")`：不是一条新消息，而是**发给 reducer 的指令**——把 id 为 m1 的消息从列表里拿掉。
+- builder2 的入口**预置了一条 id="old" 的历史消息**，first 又写入 m1，drop 只删 m1——验证删除是**按 id 精确命中**，不是清空。
+
+**运行与观察**（完整跑 `demo_messages()`）：
+
+```text
+== 第二段：add_messages 的“同 id 替换” ==
+同 id 写入后条数： 1
+内容： ['编辑后的问题']
+RemoveMessage 之后条数： 1
+内容： ['历史消息']
+```
+
+id="old" 的历史消息**幸存**，m1 被精准移除。
+
+#### 步骤 6：整合——`main()` 三段汇报
+
+**这一步解决什么**：把三个实验按"修复验证 → 替换/删除 → 覆盖对照"的顺序串起来，末尾一句话总结三条规律。
+
+```python
+import sys
+
+
+def main() -> int:
+    print("== 单元 07 实验：reducer 与消息状态 ==")
+    graph = build_graph()
+    final = graph.invoke(
+        {
+            "question": "2026 年九月净销售额比八月变化多少？",
+            "status": "running",
+            "trace": [],
+            "messages": [],
+        }
+    )
+
+    print("\n== 第一段：trace 用 operator.add 后不再被覆盖 ==")
+    print("trace 条数：", len(final["trace"]))
+    for entry in final["trace"]:
+        print("  ", json.dumps(entry, ensure_ascii=False))
+    print("status（默认覆盖）：", final["status"])
+    print("messages 条数：", len(final["messages"]))
+    for message in final["messages"]:
+        print(f"  {type(message).__name__}(id={message.id}) {message.content}")
+
+    demo_messages()
+    demo_operator_add_vs_plain()
+    print("\n[结论] 默认覆盖，Annotated 声明合并；消息用 add_messages，轨迹用 operator.add。")
+    return 0
+```
+
+清理临时验证，完整文件应与仓库完全一致：
 
 ```python
 """单元 07 实验：默认覆盖 vs 追加 reducer vs add_messages。
@@ -403,12 +693,25 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-运行：
+**回看地图**：
+
+| 步骤 | 最终脚本里的位置 |
+| --- | --- |
+| 1 注解 | `SAMPLE_MONTHS`、`OpsState`（trace/messages 两行 Annotated） |
+| 2 修复验证 | `node_parse()`、`node_compute()`、`build_graph()` |
+| 3 对照 | `demo_operator_add_vs_plain()`（plain vs added） |
+| 4 替换 | `demo_messages()` 上半（同 id 替换） |
+| 5 删除 | `demo_messages()` 下半（RemoveMessage） |
+| 6 整合 | `main()` 三段汇报、docstring、`sys.exit(main())` |
+
+运行与验收：
 
 ```powershell
-cd "D:\MySpace\LangChain学习路线\ops-assistant"
+cd ops-assistant
 uv run python ../教程/实验/07_reducers.py
 ```
+
+退出码 0。对照单元 06 的输出：trace 从 `['compute']` 变成 `['parse', 'compute']`——**一行注解的差别**。
 
 ### 5.4 逐段解释
 
