@@ -578,11 +578,347 @@ def get_region_breakdown(conn: sqlite3.Connection, month: str) -> list[RegionSal
 >
 > **官方事实**：`WITH` 子句（CTE）在 SQLite 3.8.3+ 可用，写法与标准 SQL 一致，官方语法见 https://www.sqlite.org/lang_with.html（核对日期 2026-10-19）。本项目没有用到递归 CTE。
 
-### 5.6 实验脚本（完整代码）
+### 5.6 实验脚本（一步步搭出来）
 
-保存路径：`教程/实验/12_sql_basics.py`
+§5.1～5.5 读完 schema、连接层与查询层，本实验**五段观察**：库里有啥 → 半开区间 vs LIKE（带执行计划）→ 敌意输入 → 项目查询层与"空月"语义。分 6 步搭出，最终与仓库 `教程/实验/12_sql_basics.py` 完全一致；不联网、不调用模型（需要先 `bootstrap.py` 生成数据库）。
 
-这个脚本做五件事：列出真实存在的对象、看行数、对比两种日期过滤写法与执行计划、演示“敌意输入当参数”和“敌意输入拼进 SQL”的区别、最后用项目查询层打印一个月与一个“无记录月份”。
+#### 步骤 1：常量与三个小工具——SQL 与路径先立规矩
+
+**这一步解决什么**：本实验的主角是 **SQL 文本本身**，所以 SQL 全部写成**模块级常量**（一眼看全、绝不运行时拼接）；再备三个工具：定位数据库、裸连、算次月 1 号。
+
+新建 `教程/实验/12_sql_basics.py`：
+
+```python
+"""单元 12 实验（步骤 1）：常量与工具。"""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+#: 教程/实验/12_sql_basics.py → parents[0]=实验, [1]=教程, [2]=仓库根
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_DIR = REPO_ROOT / "ops-assistant"
+
+#: 表名与它的计数 SQL 成对写死；绝不用 f-string 拼表名（表名不能用 ? 绑定）。
+COUNT_SQL: tuple[tuple[str, str], ...] = (
+    ("regions", "SELECT COUNT(*) AS n FROM regions"),
+    ("products", "SELECT COUNT(*) AS n FROM products"),
+    ("orders", "SELECT COUNT(*) AS n FROM orders"),
+    ("refunds", "SELECT COUNT(*) AS n FROM refunds"),
+)
+
+RANGE_SQL = """
+SELECT COUNT(*) AS n,
+       COALESCE(SUM(quantity * unit_price_cents), 0) AS gross_cents
+FROM orders
+WHERE order_date >= ? AND order_date < ?
+"""
+
+LIKE_SQL = """
+SELECT COUNT(*) AS n,
+       COALESCE(SUM(quantity * unit_price_cents), 0) AS gross_cents
+FROM orders
+WHERE order_date LIKE ?
+"""
+
+
+def _resolve_db(explicit: Path | None) -> Path:
+    """决定要打开哪个数据库文件。"""
+    if explicit is not None:
+        return explicit
+    return PROJECT_DIR / "data" / "ops.db"
+
+
+def _open_plain(db_path: Path) -> sqlite3.Connection:
+    """不用项目代码裸连一次，证明“表结构确实在文件里”。"""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _next_month_start(month: str) -> str:
+    """自己算次月 1 号：12 月要跨年。"""
+    year = int(month[:4])
+    month_number = int(month[5:7])
+    if month_number == 12:
+        return f"{year + 1:04d}-01-01"
+    return f"{year:04d}-{month_number + 1:02d}-01"
+```
+
+**逐行讲解**：
+
+- `COUNT_SQL` 把**表名写死在常量里**：表名不能用 `?` 绑定（`?` 只能绑值），所以受信标识符走"常量白名单"，值走参数——**两类风险两种处理**。
+- `RANGE_SQL`/`LIKE_SQL` 都是**多行字符串常量**：`>= ? AND < ?` 两个参数就是半开区间的形状；`COALESCE(..., 0)` 保证空集也返回 0 而不是 None——**空月与零额在 SQL 层就不许混淆**。
+- `_open_plain` 裸连（不走项目的 `connect()`）：这一段要证明"**表结构确实在文件里**，不依赖项目代码"；`row_factory = sqlite3.Row` 让行可以按列名取值。
+- `_next_month_start` 手算次月：12 月跨年单独处理——这个 4 行函数是"半开区间"右端点的全部秘密。
+
+**运行与观察**（临时验证）：
+
+```python
+if __name__ == "__main__":
+    print(_next_month_start("2026-09"))
+    print(_next_month_start("2026-12"))
+```
+
+```text
+2026-10-01
+2027-01-01
+```
+
+#### 步骤 2：[1][2]——库里有什么、每张表多少行
+
+**这一步解决什么**：动手查数据前先**清点库存**：`sqlite_master` 列出真实对象（表+索引），四张表各数一遍行数——后面一切数字的地基。
+
+```python
+def _show_schema_objects(conn: sqlite3.Connection) -> None:
+    """[1] 列出库里真实存在的表与索引。"""
+    rows = conn.execute(
+        """
+        SELECT type, name FROM sqlite_master
+        WHERE name NOT LIKE 'sqlite_%'
+        ORDER BY type, name
+        """
+    ).fetchall()
+    print("[1] 数据库里真实存在的对象：")
+    for row in rows:
+        print(f"    {row['type']:<6} {row['name']}")
+
+
+def _show_row_counts(conn: sqlite3.Connection) -> None:
+    """[2] 看四张表各有多少行。"""
+    print("[2] 四张表的行数：")
+    for table, sql in COUNT_SQL:
+        count = conn.execute(sql).fetchone()["n"]
+        print(f"    {table:<9} {count}")
+```
+
+**逐行讲解**：
+
+- `sqlite_master` 是 SQLite 的**元数据表**：库里有几张表、几个索引，它说了算——**别信文档，信库自己**。
+- `NOT LIKE 'sqlite_%'`：排除 SQLite 内部对象（如自动索引 `sqlite_autoindex_*`）。
+- 循环里执行的是 `COUNT_SQL` 常量而不是 f-string 拼表名——步骤 1 的规矩当场兑现。
+
+**运行与观察**（实测 2026-10-23，你的行数不同很正常——bootstrap 有随机成分）：
+
+```text
+[1] 数据库里真实存在的对象：
+    index  idx_orders_date
+    index  idx_orders_region
+    index  idx_refunds_date
+    index  idx_refunds_status
+    table  orders
+    table  products
+    table  refunds
+    table  regions
+[2] 四张表的行数：
+    regions   5
+    products  12
+    orders    956
+    refunds   94
+```
+
+四张表、四个索引——**每一个索引都对应一种高频查询路径**（日期/地区/状态），步骤 3 的执行计划会用到 `idx_orders_date`。
+
+#### 步骤 3：[3]——半开区间 vs LIKE，用 EXPLAIN 见分晓
+
+**这一步解决什么**：两种写法**结果一样**（在本库），但**代价不一样**。肉眼看不出的差别，`EXPLAIN QUERY PLAN` 曝光。
+
+```python
+def _explain(conn: sqlite3.Connection, sql: str, params: tuple[object, ...]) -> None:
+    """打印执行计划；sql 必须是本文件里的常量，绝不能来自用户输入。"""
+    for row in conn.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall():
+        print(f"      {row['detail']}")
+
+
+def _compare_range_and_like(conn: sqlite3.Connection, month: str) -> bool:
+    """[3] 两种写法结果是否一致，以及执行计划差在哪里。"""
+    start = f"{month}-01"
+    end = _next_month_start(month)
+    range_row = conn.execute(RANGE_SQL, (start, end)).fetchone()
+    like_row = conn.execute(LIKE_SQL, (f"{month}%",)).fetchone()
+
+    print(f"[3] 同一个月的两种写法（{month}）：")
+    print(f"    半开区间：{range_row['n']} 行，毛额 {range_row['gross_cents']} 分")
+    print(f"    LIKE    ：{like_row['n']} 行，毛额 {like_row['gross_cents']} 分")
+    print("    半开区间的执行计划：")
+    _explain(conn, RANGE_SQL, (start, end))
+    print("    LIKE 的执行计划：")
+    _explain(conn, LIKE_SQL, (f"{month}%",))
+
+    same = (range_row["n"] == like_row["n"]) and (
+        range_row["gross_cents"] == like_row["gross_cents"]
+    )
+    print(f"    两者结果一致：{same}（一致不代表代价一致，看上面两段计划）")
+    return same
+```
+
+**逐行讲解**：
+
+- `EXPLAIN QUERY PLAN` 前缀拼接的 `sql` **只可能是本文件常量**（docstring 里写死了这条纪律）——EXPLAIN 不是参数化的入口，所以"输入受信"是它的安全前提。
+- 返回值 `same` 冒泡到 main：如果两种写法**结果都不一致**，说明数据里有不符合 `YYYY-MM-DD` 定长格式的日期——**实验本身就是数据质量探测器**。
+- `(start, end)` 两参数与 `(f"{month}%",)` 一参数：半开区间给的是**两个端点**，LIKE 给的是**模式**——语义完全不同的两样东西。
+
+**运行与观察**（实测）：
+
+```text
+[3] 同一个月的两种写法（2026-09）：
+    半开区间：50 行，毛额 1618920 分
+    LIKE    ：50 行，毛额 1618920 分
+    半开区间的执行计划：
+      SEARCH orders USING INDEX idx_orders_date (order_date>? AND order_date<?)
+    LIKE 的执行计划：
+      SCAN orders
+    两者结果一致：True（一致不代表代价一致，看上面两段计划）
+```
+
+**SEARCH（走索引） vs SCAN（全表扫）**——结果相同，代价天差地别；表越大差距越大。这就是 §5.4 的结论从"听说"变成"亲眼看到"。
+
+#### 步骤 4：[4]——敌意输入：当参数 vs 拼进 SQL
+
+**这一步解决什么**：SQL 注入不是传说。同一条敌意字符串，**当参数传**与**拼进 SQL 文本**的下场并排看（拼接版只打印不执行）。
+
+```python
+def _parameter_demo(conn: sqlite3.Connection) -> None:
+    """[4] 敌意输入：当参数 vs 拼进 SQL。"""
+    hostile = "2026-09' OR '1'='1"
+
+    safe_row = conn.execute(
+        "SELECT COUNT(*) AS n FROM orders WHERE substr(order_date, 1, 7) = ?",
+        (hostile,),
+    ).fetchone()
+    print(f"[4] 敌意输入 {hostile!r} 当参数传入：命中 {safe_row['n']} 行（它只是数据）")
+
+    built = (
+        "SELECT COUNT(*) AS n FROM orders "
+        f"WHERE substr(order_date, 1, 7) = '{hostile}'"
+    )
+    print("    同一句话如果拼进 SQL，发给数据库的文本会变成：")
+    print(f"      {built}")
+    print("    这里只打印、不执行；执行它会命中整张表（条件被 OR 短路）。")
+```
+
+**逐行讲解**：
+
+- `hostile` 里的 `'` 与 `OR '1'='1`：拼接后 WHERE 条件被 **OR 短路成永真**——整张表全命中。这就是注入的全部原理，两行讲完。
+- 参数版命中 **0 行**：参数永远是"一个值"，引号只是字符——数据库根本不会把它当 SQL 结构解析。
+- 拼接版**只打印不执行**：演示危险不等于制造危险——教学代码也要有安全底线。
+
+**运行与观察**（实测）：
+
+```text
+[4] 敌意输入 "2026-09' OR '1'='1" 当参数传入：命中 0 行（它只是数据）
+    同一句话如果拼进 SQL，发给数据库的文本会变成：
+      SELECT COUNT(*) AS n FROM orders WHERE substr(order_date, 1, 7) = '2026-09' OR '1'='1'
+    这里只打印、不执行；执行它会命中整张表（条件被 OR 短路）。
+```
+
+#### 步骤 5：[5]——换上项目的查询层，看"空月"语义
+
+**这一步解决什么**：前四段是裸 SQL；最后换**项目自己的查询层**（`connect`/`get_month_sales`/`get_region_breakdown`/`list_available_months`），重点验证 §5.5 的两个设计：恒返回全部地区、**无记录 ≠ 零销售额**。
+
+```python
+def _project_layer(db_path: Path, month: str, empty_month: str) -> None:
+    """[5] 用项目自己的查询层，对比“有数据”与“无记录”。"""
+    from ops_assistant.data.db import connect
+    from ops_assistant.data.queries import (
+        get_month_sales,
+        get_region_breakdown,
+        list_available_months,
+    )
+
+    conn = connect(db_path)
+    try:
+        sales = get_month_sales(conn, month)
+        print(f"[5] get_month_sales({month!r})：")
+        print(f"    毛额 {sales.gross_cents} 分 / 退款 {sales.refund_cents} 分"
+              f" / 净额 {sales.net_cents} 分")
+        print(f"    订单 {sales.order_count} 笔，approved 退款 {sales.approved_refund_count} 笔，"
+              f"pending 退款 {sales.pending_refund_count} 笔")
+        print(f"    has_orders={sales.has_orders}, "
+              f"has_any_refund_records={sales.has_any_refund_records}")
+
+        print(f"[5] get_region_breakdown({month!r})：")
+        for region in get_region_breakdown(conn, month):
+            flag = "无记录" if region.order_count == 0 else "有订单"
+            print(f"    {region.region_id:<8} {region.region_name:<3} "
+                  f"净额 {region.net_cents:>12} 分  订单 {region.order_count:>3} 笔  {flag}")
+
+        available = list_available_months(conn)
+        print(f"[5] 库中真实出现过的月份 {len(available)} 个：{available[0]} … {available[-1]}")
+
+        empty = get_month_sales(conn, empty_month)
+        print(f"[5] 空月 {empty_month!r}：毛额 {empty.gross_cents} 分，"
+              f"has_orders={empty.has_orders}（无记录，而不是“销售额为 0”）")
+        print(f"    {empty_month!r} 在 list_available_months() 里：{empty_month in available}")
+    finally:
+        conn.close()
+```
+
+**逐行讲解**：
+
+- 项目的 import 放**函数内**：本实验前四段不需要项目代码也能跑，第五段才挂上——依赖分层让"裸 SQL 教学"与"项目验证"互不拖累。
+- `get_month_sales` 的返回是**带语义字段的对象**（has_orders/has_any_refund_records）：查询层把"无记录"这个事实带出来了，业务层才有资格区分"没数据"和"真的是 0"。
+- `list_available_months` 与空月对照：`2025-01` 不在列表里 → 它**从未有过订单**——数据范围的事实要在库里查，不能靠人记。
+
+**运行与观察**（实测节选）：
+
+```text
+[5] get_month_sales('2026-09')：
+    毛额 1618920 分 / 退款 508121 分 / 净额 1110799 分
+    订单 50 笔，approved 退款 16 笔，pending 退款 0 笔
+    has_orders=True, has_any_refund_records=True
+[5] get_region_breakdown('2026-09')：
+    R_EAST   华东  净额       203654 分  订单   9 笔  有订单
+    R_SW     西南  净额            0 分  订单  10 笔  有订单
+[5] 库中真实出现过的月份 20 个：2025-02 … 2026-09
+[5] 空月 '2025-01'：毛额 0 分，has_orders=False（无记录，而不是“销售额为 0”）
+    '2025-01' 在 list_available_months() 里：False
+```
+
+注意西南：**净额 0、订单 10 笔**——"真零"（毛额=退款）与空月的"无记录"是两回事，两种字段（order_count 与 has_orders）各说各的。
+
+#### 步骤 6：整合——`main()` 与命令行
+
+**这一步解决什么**：argparse 三个参数（db/month/empty-month）让实验**可复现、可换月**；数据库不存在的失败要前置；两种写法不一致要用退出码报警。
+
+```python
+import argparse
+import sys
+
+
+def main(argv: list[str] | None = None) -> int:
+    """命令行入口：返回进程退出码（0 成功，1 失败）。"""
+    parser = argparse.ArgumentParser(description="单元 12 实验：四张表、半开区间与参数化查询")
+    parser.add_argument("--db", type=Path, default=None, help="数据库路径，默认 ops-assistant/data/ops.db")
+    parser.add_argument("--month", default="2026-09", help="要观察的月份，默认 2026-09")
+    parser.add_argument("--empty-month", default="2025-01", help="已知无记录的月份，默认 2025-01")
+    args = parser.parse_args(argv)
+
+    db_path = _resolve_db(args.db)
+    if not db_path.is_file():
+        print(f"数据库不存在：{db_path}", file=sys.stderr)
+        print("请先在 ops-assistant/ 目录下运行：uv run python scripts/bootstrap.py", file=sys.stderr)
+        return 1
+
+    conn = _open_plain(db_path)
+    try:
+        _show_schema_objects(conn)
+        _show_row_counts(conn)
+        consistent = _compare_range_and_like(conn, args.month)
+        _parameter_demo(conn)
+    finally:
+        conn.close()
+
+    _project_layer(db_path, args.month, args.empty_month)
+
+    if not consistent:
+        print("两种日期写法的结果不一致，说明数据里存在不符合 YYYY-MM-DD 定长格式的日期。")
+        return 1
+    return 0
+```
+
+清理临时验证，完整文件应与仓库完全一致：
 
 ```python
 """单元 12 实验：看清四张表、半开区间与参数化查询。
@@ -791,6 +1127,19 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 ```
+
+**回看地图**：
+
+| 步骤 | 最终脚本里的位置 |
+| --- | --- |
+| 1 规矩 | `COUNT_SQL`/`RANGE_SQL`/`LIKE_SQL`、`_resolve_db()`、`_open_plain()`、`_next_month_start()` |
+| 2 清点 | `_show_schema_objects()`[1]、`_show_row_counts()`[2] |
+| 3 对比 | `_explain()`、`_compare_range_and_like()`[3]（SEARCH vs SCAN） |
+| 4 注入 | `_parameter_demo()`[4] |
+| 5 项目层 | `_project_layer()`[5]（空月语义） |
+| 6 整合 | `main()`（argparse + 退出码）、`raise SystemExit(main())` |
+
+运行与验收：见 §5.7 的命令（含换月重跑）。核心验收：[3] 两段执行计划一 SEARCH 一 SCAN、[4] 参数版命中 0 行、[5] 空月的 has_orders=False——三件事都对，本实验才算过。
 
 ### 5.7 运行命令
 
