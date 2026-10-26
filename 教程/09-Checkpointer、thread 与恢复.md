@@ -186,7 +186,7 @@ print(third["turn"])
 
 **这一步解决什么**：checkpointer 是"外挂"，图本身不需要知道它存在。先写一个**自带轮次计数**的 echo 图——`turn` 是观察"恢复有没有接上"的最直观指标。
 
-新建 `教程/实验/09_checkpoint.py`：
+新建 `教程/我的实验/09_checkpoint.py`（参考实现在 `教程/实验/09_checkpoint.py`，写完本单元再对照）：
 
 ```python
 """单元 09 实验（步骤 1）：带轮次计数的 echo 图。"""
@@ -650,8 +650,8 @@ if __name__ == "__main__":
 
 ```powershell
 cd ops-assistant
-uv run python ../教程/实验/09_checkpoint.py
-uv run python ../教程/实验/09_checkpoint.py --resume
+uv run python ../教程/我的实验/09_checkpoint.py
+uv run python ../教程/我的实验/09_checkpoint.py --resume
 ```
 
 两连跑都退出码 0；第二次运行第一段的 InMemorySaver 部分 turn 仍从 1 开始（进程内新建），第三段 SqliteSaver 部分 turn 却**接着上一次**——内存与落盘的差别，亲眼看到。
@@ -897,4 +897,4 @@ def node_review(state):
 1. 单元 10～15：把 `ops-assistant` 的数据层、计算层、知识库、报告模板逐个实现并测试。
 2. 单元 16～19：HITL 审批、导出、CLI/API/UI、工程化与评测。
 
-进入前请确认：你完成了 00～09 的验收清单，并且能独立跑通 `教程/实验/` 下至少 8 个脚本（无密钥路径）。
+进入前请确认：你完成了 00～09 的验收清单，并且能独立跑通 `教程/我的实验/` 下至少 8 个脚本（无密钥路径）。

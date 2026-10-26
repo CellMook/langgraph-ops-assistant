@@ -158,7 +158,7 @@ print(result["messages"][-1].content)
 
 **这一步解决什么**：agent 要有"手"。单元 04 已经写过带 `sources` 的完整工具，这里用**精简版**（两行假数据、同样的 ok/false 纪律）——重点是后面的 agent 组装，不在工具本身重复花力气。
 
-新建 `教程/实验/05_simple_agent.py`：
+新建 `教程/我的实验/05_simple_agent.py`（参考实现在 `教程/实验/05_simple_agent.py`，写完本单元再对照）：
 
 ```python
 """单元 05 实验（步骤 1）：工具层。"""
@@ -668,7 +668,7 @@ if __name__ == "__main__":
 
 ```powershell
 cd ops-assistant
-uv run python ../教程/实验/05_simple_agent.py
+uv run python ../教程/我的实验/05_simple_agent.py
 ```
 
 无密钥：退出码 0，走 `[回退]` 分支，得到带 `used_fallback=True` 和 sources 的正确结论。有密钥：走 `[运行]` 分支，核对**工具调用记录里的参数与数字**是否与回答一致——一致，说明"禁止心算"生效了。
@@ -905,4 +905,4 @@ def test_run_simple_agent_contract():
 3. 用 `START` / `END` 连一条直线图，`compile()` 后 `invoke()`。
 4. 把“九月 vs 八月”这个业务问题拆成 3 个节点，观察状态如何一步步长出来。
 
-进入前请确认：`uv run python ../教程/实验/05_simple_agent.py` 能跑完（无密钥走回退分支），且你能说出 `used_fallback` 的含义。
+进入前请确认：`uv run python ../教程/我的实验/05_simple_agent.py` 能跑完（无密钥走回退分支），且你能说出 `used_fallback` 的含义。

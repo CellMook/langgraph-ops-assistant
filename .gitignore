@@ -72,6 +72,12 @@ Thumbs.db
 # 教程实验脚本的运行副产物（16_interrupt_resume.py 会写 教程/实验/_output/）
 教程/实验/_output/
 
+# 学习者练习本：你的实验脚本与运行副产物只属于你，不入库（答案库 教程/实验/ 正常提交）
+教程/我的实验/
+
+# 14 单元教学用单文件草稿目录（工作稿）
+ops-assistant/scratch/
+
 # 可重复运行的验收脚本输出
 ops-assistant/data/verification/
 

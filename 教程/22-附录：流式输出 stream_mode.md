@@ -125,7 +125,7 @@ uv run python scripts/run_cli.py -q "..." --stream --json   # JSONL：每事件�
 
 ## 5. 文件、完整代码、配置与命令
 
-保存路径：`教程/实验/22_streaming.py`
+保存路径：`教程/我的实验/22_streaming.py`（参考实现：`教程/实验/22_streaming.py`）
 
 把 LangGraph 的四种流式姿势（updates / 多模式组合 / `__interrupt__` 事件 / resume 续流）**接到主项目工作流上**验证。拆 5 步搭出，最终与仓库完全一致；纯规则模式，不需要密钥。
 
@@ -133,7 +133,7 @@ uv run python scripts/run_cli.py -q "..." --stream --json   # JSONL：每事件�
 
 **这一步解决什么**：流式操作直接发生在 `graph` 上，所以要自己准备 `config`（thread/user）和 `context`（节点依赖注入）——正好借此看清 `invoke_turn` 帮你包掉了什么。
 
-新建 `教程/实验/22_streaming.py`：
+新建 `教程/我的实验/22_streaming.py`（参考实现在 `教程/实验/22_streaming.py`，写完本单元再对照）：
 
 ```python
 """单元 22（附录）实验（步骤 1）：环境与装配。"""
@@ -402,7 +402,7 @@ if __name__ == "__main__":
 用法（在 `ops-assistant` 目录执行）：
 
 ```bash
-uv run python ../教程/实验/22_streaming.py
+uv run python ../教程/我的实验/22_streaming.py
 ```
 
 三个实现细节值得停下来看：

@@ -264,7 +264,7 @@ def _prefs_for_user(deps: _Deps, user_id: str, *, thread_id: str) -> dict[str, A
 
 > 这五段合起来就是本单元的全部机制：**短期记忆在检查点里（`last_spec`）、长期记忆在独立表里（`prefs`）、依赖从 context 注入（不入档）**。
 
-### 5.2 可运行实验：`教程/实验/15_memory_store.py`（一步步搭出来）
+### 5.2 可运行实验：`教程/我的实验/15_memory_store.py`（一步步搭出来）
 
 不导入 ops_assistant、不联网：用一个**迷你图**复刻主项目的四层机制（State / Checkpointer / Store / Runtime Context），每层单独观察。分 7 步搭出，最终与仓库完全一致；运行前不需要任何环境变量。
 
@@ -272,7 +272,7 @@ def _prefs_for_user(deps: _Deps, user_id: str, *, thread_id: str) -> dict[str, A
 
 **这一步解决什么**：动手前先划清三块领地——**图状态**（MiniState，进检查点）、**运行时依赖**（MiniContext，不进检查点）、**默认偏好**（DEFAULT_PREFS，兜底值）。
 
-新建 `教程/实验/15_memory_store.py`：
+新建 `教程/我的实验/15_memory_store.py`（参考实现在 `教程/实验/15_memory_store.py`，写完本单元再对照）：
 
 ```python
 """单元 15 实验（步骤 1）：常量、上下文与状态。"""
@@ -998,12 +998,12 @@ if __name__ == "__main__":
 
 ```powershell
 cd "D:\MySpace\LangChain学习路线\ops-assistant"
-uv run python ../教程/实验/15_memory_store.py
+uv run python ../教程/我的实验/15_memory_store.py
 ```
 
 生成物（都在实验目录，不进 `ops-assistant/data`）：
 
-- `教程/实验/_output/preferences.db`：教学版 Store 的 SQLite 文件（每次运行前会删掉重建）。
+- `教程/我的实验/_output/preferences.db`：教学版 Store 的 SQLite 文件（每次运行前会删掉重建）。
 
 ### 5.4 逐段解释
 
