@@ -244,7 +244,7 @@ def node_drop(state: ChatState) -> dict:
 
 **这一步解决什么**：单元 06 的 `trace` 之所以被覆盖，是因为**默认 reducer 是"整个键覆盖"**。修法不是改节点函数，而是**在状态定义上声明合并方式**：`Annotated[类型, reducer函数]`。
 
-新建 `教程/实验/07_reducers.py`：
+新建 `教程/我的实验/07_reducers.py`（参考实现在 `教程/实验/07_reducers.py`，写完本单元再对照）：
 
 ```python
 """单元 07 实验（步骤 1）：给状态声明合并方式。"""
@@ -708,7 +708,7 @@ if __name__ == "__main__":
 
 ```powershell
 cd ops-assistant
-uv run python ../教程/实验/07_reducers.py
+uv run python ../教程/我的实验/07_reducers.py
 ```
 
 退出码 0。对照单元 06 的输出：trace 从 `['compute']` 变成 `['parse', 'compute']`——**一行注解的差别**。
@@ -947,4 +947,4 @@ conn: sqlite3.Connection
 3. 用 `budget` + `recursion_limit` 给循环上刹车，并实现 `fail` 节点。
 4. 把项目的边表与代码一一对上（单元 08 末尾有一张对照表）。
 
-进入前请确认：`uv run python ../教程/实验/07_reducers.py` 能跑完，且你能解释输出里“同 id 写入后条数：1”的原因。
+进入前请确认：`uv run python ../教程/我的实验/07_reducers.py` 能跑完，且你能解释输出里“同 id 写入后条数：1”的原因。

@@ -207,7 +207,7 @@ def node_fetch(state: TinyState) -> dict:
 
 **这一步解决什么**：图还没画，先把**状态长什么样**定下来——TypeScript 里叫 interface，LangGraph 里就是 TypedDict。字段名**刻意与项目 `AssistantState` 对齐**，学完能无缝迁移。
 
-新建 `教程/实验/06_state_graph.py`：
+新建 `教程/我的实验/06_state_graph.py`（参考实现在 `教程/实验/06_state_graph.py`，写完本单元再对照）：
 
 ```python
 """单元 06 实验（步骤 1）：状态契约与样例数据。"""
@@ -599,7 +599,7 @@ if __name__ == "__main__":
 
 ```powershell
 cd ops-assistant
-uv run python ../教程/实验/06_state_graph.py
+uv run python ../教程/我的实验/06_state_graph.py
 ```
 
 退出码 0；你应当能回答：①每个节点返回了哪些键？②为什么 trace 只剩 compute 一条？③如果要让 trace 追加，该改状态的哪一行？（答不上第 3 问没关系，单元 07 第一节就讲。）
@@ -832,4 +832,4 @@ return {"spec": spec, "status": "running", "trace": trace, "unknown_field": 1}
 3. 用 `MessagesState` 作为最小可用状态，再对比项目的 `AssistantState`。
 4. 学一套“状态字段设计检查清单”，避免把不该进状态的东西塞进去。
 
-进入前请确认：`uv run python ../教程/实验/06_state_graph.py` 能跑完，且你能指出输出里哪一行证明了“默认 reducer 是覆盖”。
+进入前请确认：`uv run python ../教程/我的实验/06_state_graph.py` 能跑完，且你能指出输出里哪一行证明了“默认 reducer 是覆盖”。

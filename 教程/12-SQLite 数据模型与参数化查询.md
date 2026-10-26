@@ -586,7 +586,7 @@ def get_region_breakdown(conn: sqlite3.Connection, month: str) -> list[RegionSal
 
 **这一步解决什么**：本实验的主角是 **SQL 文本本身**，所以 SQL 全部写成**模块级常量**（一眼看全、绝不运行时拼接）；再备三个工具：定位数据库、裸连、算次月 1 号。
 
-新建 `教程/实验/12_sql_basics.py`：
+新建 `教程/我的实验/12_sql_basics.py`（参考实现在 `教程/实验/12_sql_basics.py`，写完本单元再对照）：
 
 ```python
 """单元 12 实验（步骤 1）：常量与工具。"""
@@ -1152,11 +1152,11 @@ Test-Path data/ops.db
 uv run python scripts/bootstrap.py
 
 # 3) 跑本单元实验
-uv run python ../教程/实验/12_sql_basics.py
+uv run python ../教程/我的实验/12_sql_basics.py
 
 # 4) 换个月份、换个库路径
-uv run python ../教程/实验/12_sql_basics.py --month 2026-03
-uv run python ../教程/实验/12_sql_basics.py --db data/ops.db --empty-month 2025-01
+uv run python ../教程/我的实验/12_sql_basics.py --month 2026-03
+uv run python ../教程/我的实验/12_sql_basics.py --db data/ops.db --empty-month 2025-01
 
 # 5) 看退出码（0 = 两种日期写法结果一致）
 echo $LASTEXITCODE
@@ -1495,7 +1495,7 @@ init_schema(conn)   # 第二次执行
 
 - [ ] 我能画出四张表的关系图，并说出 `orders.unit_price_cents` 与 `products.unit_price_cents` 的区别。
 - [ ] 我能不看资料写出 `2026-09` 的半开区间两个参数，并说出 12 月的右边界是什么。
-- [ ] 我跑通了 `教程/实验/12_sql_basics.py`，看到 `[3]` 的两种写法结果一致、执行计划不同。
+- [ ] 我跑通了 `教程/我的实验/12_sql_basics.py`，看到 `[3]` 的两种写法结果一致、执行计划不同。
 - [ ] 我亲手做了一次 8.4：同一句 SQL，`?` 传参返回 0 行，f-string 拼接返回全表。
 - [ ] 我能解释为什么 `substr(order_date, 1, 7) = ?` 用不上 `idx_orders_date`。
 - [ ] 我能说出“无记录 / 真零 / 零基数”的区别，并各举一个本项目的例子。
@@ -1538,4 +1538,4 @@ init_schema(conn)   # 第二次执行
 4. 计算差额、变化率、地区差额分解，并跑通**地区差额合计必须等于总差额**这条校验。
 5. 看清“为什么数字必须由程序算，而不是由模型算”。
 
-进入前请确认：你能在本机跑通 `uv run python ../教程/实验/12_sql_basics.py` 并看到 `[5]` 里“西南净额 0 但订单数大于 0”那一行。
+进入前请确认：你能在本机跑通 `uv run python ../教程/我的实验/12_sql_basics.py` 并看到 `[5]` 里“西南净额 0 但订单数大于 0”那一行。

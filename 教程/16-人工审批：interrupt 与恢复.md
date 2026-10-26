@@ -152,7 +152,7 @@ payload 会被写进 SQLite 检查点再读回来。所以项目用 `jsonable()`
 
 源码：`workflow/nodes.py` 的 review_node/export_node、`workflow/persistence.py` 的 resume_turn。以下实验展示框架中断语义；HTTP 集成示例见单元 19。
 
-### 5.2 可运行实验：`教程/实验/16_interrupt_resume.py`（一步步搭出来）
+### 5.2 可运行实验：`教程/我的实验/16_interrupt_resume.py`（一步步搭出来）
 
 迷你图 `draft → review（interrupt）→ export`，把审批的**九种局面**全部演一遍：暂停、approve、reject、edit 采纳、edit 拒绝、非法值、重复 resume 幂等、无待审批报错、落盘核对。不导入 ops_assistant、不联网、不需要模型。脚本最大（307 行），拆 **8 步**搭出，最终与仓库完全一致。
 
@@ -160,7 +160,7 @@ payload 会被写进 SQLite 检查点再读回来。所以项目用 `jsonable()`
 
 **这一步解决什么**：审批入口必须**宽容输入**（用户可能打"通过/ok/yes"）、**严格语义**（只有三种决定）；再加一个模块级 REPLAYS 列表，把"哪些节点被重新执行了"暴露给肉眼。
 
-新建 `教程/实验/16_interrupt_resume.py`：
+新建 `教程/我的实验/16_interrupt_resume.py`（参考实现在 `教程/实验/16_interrupt_resume.py`，写完本单元再对照）：
 
 ```python
 """单元 16 实验（步骤 1）：别名表、状态与重放记录仪。"""
@@ -960,10 +960,10 @@ if __name__ == "__main__":
 
 ```powershell
 cd "D:\MySpace\LangChain学习路线\ops-assistant"
-uv run python ../教程/实验/16_interrupt_resume.py
+uv run python ../教程/我的实验/16_interrupt_resume.py
 ```
 
-生成物：`教程/实验/_output/report-demo.md`（每次运行前会删掉整个 `_output` 目录重建）。
+生成物：`教程/我的实验/_output/report-demo.md`（每次运行前会删掉整个 `_output` 目录重建）。
 
 ### 5.4 逐段解释
 
