@@ -28,16 +28,22 @@ class QuestionSpecModel(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    raw: str = Field(min_length=1, description="用户原始问题")
+    raw: str = Field(min_length=1, description="用户原始问题（不可为空）")
     current_month: str = Field(pattern=MONTH_PATTERN, description="本期月份 YYYY-MM")
-    previous_month: str | None = Field(default=None, pattern=MONTH_PATTERN)
-    regions: list[str] = Field(default_factory=list)
-    dimension: str = Field(default="region")
-    metric: str = Field(default="net_sales")
-    wants_comparison: bool = False
-    asks_refund_definition: bool = False
-    needs_clarification: bool = False
-    clarification: str | None = None
+    previous_month: str | None = Field(
+        default=None, pattern=MONTH_PATTERN, description="对比的基准月（上期）；不比较时为 None"
+    )
+    regions: list[str] = Field(
+        default_factory=list, description="region_id 列表，如 R_EAST；空列表 = 全部地区"
+    )
+    dimension: str = Field(default="region", description="分析维度：region|product|month|channel|unknown")
+    metric: str = Field(default="net_sales", description="指标：net_sales|gross_sales|refunds")
+    wants_comparison: bool = Field(default=False, description="用户是否要求对比（环比/同比）")
+    asks_refund_definition: bool = Field(default=False, description="用户是否在问“退款”的定义")
+    needs_clarification: bool = Field(default=False, description="信息不足，需要向用户澄清")
+    clarification: str | None = Field(
+        default=None, description="给用户看的澄清问题文本；needs_clarification=True 时才有意义"
+    )
 
     @field_validator("dimension")
     @classmethod
